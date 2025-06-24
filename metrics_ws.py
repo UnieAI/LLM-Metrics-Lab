@@ -72,7 +72,7 @@ class FileHandler:
         self.close()
 
 class APIThroughputMonitor:
-    def __init__(self, model: str, api_url: str, api_key: str, max_concurrent: int = 5, columns: int = 3, log_file: str = "api_monitor.jsonl", plot_file: str = "api_metrics.png", output_dir: str = None):
+    def __init__(self, model: str, api_url: str, api_key: str, max_concurrent: int = 5, columns: int = 3, log_file: str = "api_monitor.jsonl", plot_file: str = "api_metrics.png", request_log_file: str = "request_api_monitor.jsonl", output_dir: str = None):
         self.model = model
         self.api_url = api_url
         self.api_key = api_key
@@ -97,6 +97,8 @@ class APIThroughputMonitor:
         self._stop_requested = False
         self.websocket = None
         self.pending_messages = []
+        self.request_logs = []
+        self.request_log_file = request_log_file
         
         # Initialize log file
         with open(Path(self.output_dir, self.log_file).resolve(), 'w') as f:
@@ -217,7 +219,7 @@ class APIThroughputMonitor:
                 self.sessions[id]['tokens_amount'] = []
 
             status = {
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
                 "elapsed_seconds": elapsed,
                 "total_chars": total_chars,
                 "chars_per_second": round(chars_per_second, 2),
@@ -300,6 +302,7 @@ class APIThroughputMonitor:
 
     async def make_request(self, session_id):
         global count_id
+        request_id = str(uuid.uuid4())
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}"
@@ -332,6 +335,7 @@ class APIThroughputMonitor:
             # Make request with SSL verification disabled
             async with httpx.AsyncClient(verify=False, timeout=180.0) as client:
                 async with client.stream("POST", f"{self.api_url}/chat/completions", headers=headers, json=payload) as response:
+                    status_code = response.status_code
                     payload_record = FileHandler(f"{self.output_dir}/in_{runtime_uuid}_{session_id}.json", "w", True)
                     output_record = FileHandler(f"{self.output_dir}/out_{runtime_uuid}_{session_id}.json", "w", True)
 
@@ -339,6 +343,9 @@ class APIThroughputMonitor:
                     payload_record.close()
 
                     async for line in response.aiter_lines():
+                        if time.time() > self.end_time:
+                            raise TimeoutError("Request exceeded time limit.")
+                    
                         if line:
                             data = self.process_stream_info(line)
                             if data is None:
@@ -367,6 +374,43 @@ class APIThroughputMonitor:
                     "error": None
                 })
                 self.successful_requests += 1
+                
+                log_record = {
+                    "request_id": request_id,
+                    "session_id": session_id,
+                    "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
+                    "latency_ms": round(response_time * 1000, 2),
+                    "status": "success",
+                    "status_code": status_code,
+                    "total_chars": self.sessions[session_id]["total_chars"],
+                    "chunks_received": self.sessions[session_id]["chunks_received"],
+                    "first_token_latency": self.sessions[session_id]["first_token_latency"],
+                }
+                self.request_logs.append(log_record)
+                # ✅ 寫入檔案
+                with open(self.request_log_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(log_record) + "\n")
+        except TimeoutError as e:
+            # ⛔ 單獨處理 Timeout
+            async with self.lock:
+                self.sessions[session_id].update({
+                    "status": "Timeout",
+                    "error": str(e),
+                    "response_time": "N/A"
+                })
+                self.failed_requests += 1
+
+                log_record = {
+                    "request_id": request_id,
+                    "session_id": session_id,
+                    "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
+                    "latency_ms": round((time.time() - start_time) * 1000, 2),
+                    "status": "timeout",
+                    "error": str(e),
+                }
+                self.request_logs.append(log_record)
+                with open(self.request_log_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(log_record) + "\n")
         except Exception as e:
             async with self.lock:
                 logger.error(f"Error in session {session_id}: {str(e)}")
@@ -376,6 +420,19 @@ class APIThroughputMonitor:
                     "response_time": "N/A"
                 })
                 self.failed_requests += 1
+                
+                log_record = {
+                    "request_id": request_id,
+                    "session_id": session_id,
+                    "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
+                    "latency_ms": round((time.time() - start_time) * 1000, 2),
+                    "status": "fail",
+                    "error": str(e),
+                }
+                self.request_logs.append(log_record)
+                # ✅ 寫入檔案
+                with open(self.request_log_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(log_record) + "\n")
 
         finally:
             async with self.lock:
@@ -393,7 +450,7 @@ class APIThroughputMonitor:
         """Async version of run for WebSocket integration"""
         self.duration = duration
         self.websocket = websocket
-        end_time = time.time() + duration
+        self.end_time = time.time() + duration
         session_id = 0
         self.running = True
         self._stop_requested = False
@@ -407,7 +464,7 @@ class APIThroughputMonitor:
             auto_refresh=True
         ) as live:
             try: 
-                while time.time() < end_time and self.running and not self._stop_requested:
+                while time.time() < self.end_time and self.running and not self._stop_requested:
                     current_time = time.time()
 
                     if current_time - self.last_log_time >= 1.0:
@@ -434,6 +491,14 @@ class APIThroughputMonitor:
                 }
                 await safe_send(self.websocket, file_info, monitor=self)
                 logger.info(f"📦 Log file info sent to frontend.")
+                # Send log file to frontend
+                file_info = {
+                    "status": "file",
+                    "fileName": self.request_log_file,
+                    "fileUrl": f"/downloads/{self.request_log_file}"
+                }
+                await safe_send(self.websocket, file_info, monitor=self)
+                logger.info(f"📦 Request Log file info sent to frontend.")
                 # Generate charts
                 try:
                     log_file_path = Path(self.output_dir, self.log_file).resolve()
@@ -545,6 +610,7 @@ async def websocket_handler(websocket: WebSocket):
                     output_dir = get_value_or_default(params.get("output_dir"), LOG_FILE_DIR)    # Load it from environment variables
                     log_file = get_value_or_default(params.get("log_file"), f"api_monitor_{current_time}.jsonl")
                     plot_file = get_value_or_default(params.get("plot_file"), f"api_metrics_{current_time}.png")
+                    request_log_file = get_value_or_default(params.get("request_log_file"), f"request_api_monitor_{current_time}.jsonl")
                     # Datasets
                     dataset_name = params.get('dataset', "tatsu-lab/alpaca") # Dangours, use with caution
                     template_str = params.get('template')
@@ -583,6 +649,7 @@ async def websocket_handler(websocket: WebSocket):
                                 columns=columns,
                                 log_file=log_file,
                                 plot_file=plot_file,
+                                request_log_file=request_log_file,
                                 output_dir=output_dir
                             )
                             
