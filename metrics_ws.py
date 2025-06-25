@@ -395,6 +395,26 @@ class APIThroughputMonitor:
                     # ✅ 寫入檔案
                     with open(self.request_log_file, "a", encoding="utf-8") as f:
                         f.write(json.dumps(log_record) + "\n")
+            except asyncio.CancelledError:
+                async with self.lock:
+                    self.sessions[session_id].update({
+                        "status": "Cancelled",
+                        "error": "Cancelled by stop",
+                        "response_time": "N/A"
+                    })
+                    self.failed_requests += 1
+
+                    log_record = {
+                        "session_id": session_id,
+                        "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
+                        "latency": round(time.time() - start_time, 2),
+                        "status": "cancelled",
+                        "error": "Cancelled by stop",
+                    }
+                    self.request_logs.append(log_record)
+                    with open(self.request_log_file, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(log_record) + "\n")
+                raise  # 很重要，保證取消不被吞掉
             except Exception as e:
                 async with self.lock:
                     logger.error(f"Error in session {session_id}: {str(e)}")
@@ -438,6 +458,8 @@ class APIThroughputMonitor:
         session_id = 0
         self.running = True
         self._stop_requested = False
+        self.tasks = []
+        self.timeout_notified = False
         
         logger.info(f"🧪 Starting run loop for {duration}s with max_concurrent={self.max_concurrent}")
         
@@ -452,6 +474,14 @@ class APIThroughputMonitor:
                        or self.active_sessions > 0:
                     current_time = time.time()
 
+                    if not self.timeout_notified and time.time() >= self.end_time:
+                        if self.websocket and self.websocket.client_state == WebSocketState.CONNECTED:
+                            await safe_send(self.websocket, {
+                                "status": "timeout",
+                                "message": "Execution time limit reached. No new requests will be sent, but running requests will continue."
+                            }, monitor=self)
+                        self.timeout_notified = True
+    
                     if current_time - self.last_log_time >= 1.0:
                         await self.log_status()
 
@@ -459,7 +489,8 @@ class APIThroughputMonitor:
                         session_id += 1
                         async with self.lock:
                             self.active_sessions += 1
-                        asyncio.create_task(self.make_request(session_id))
+                        task = asyncio.create_task(self.make_request(session_id))
+                        self.tasks.append(task)
                     
                     if self.should_update_display():
                         if self.websocket and self.websocket.client_state == WebSocketState.CONNECTED:
@@ -470,6 +501,13 @@ class APIThroughputMonitor:
             finally:
                 if self.websocket and self.websocket.client_state == WebSocketState.CONNECTED:
                     live.update(await self.generate_status_table(self.websocket))
+                
+                logger.info("🛑 Stopping... Cancelling all running make_request tasks")
+                for task in self.tasks:
+                    task.cancel()
+                await asyncio.gather(*self.tasks, return_exceptions=True)
+                self.tasks.clear()
+                
                 self.pending_messages = []
                 # Send log file to frontend
                 file_info = {
@@ -504,6 +542,7 @@ class APIThroughputMonitor:
                     logger.error(f"❌ Failed to generate visualization: {e}")
                 # Clean up states
                 self.running = False
+                self.timeout_notified = False
                 self._stop_requested = False
                 logger.info("🛑 run() has ended (timeout or stopped).")
                 # logger.info(f"File Path: {file_info}")
@@ -654,6 +693,7 @@ async def websocket_handler(websocket: WebSocket):
             elif data.get("command") == "stop":
                 if monitor and monitor.running:
                     await monitor.stop_monitor()
+                    logger.info("Stop signal sent to monitor. Waiting for it to finish naturally.")
                     if monitor_task:
                         monitor_task.cancel()
                         try:

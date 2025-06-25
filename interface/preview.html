@@ -586,7 +586,8 @@
             'completed': handleCompletedMessage,
             'file': handleFileMessage,
             'rebound': handleReboundMessage,
-            'no_monitor': handleNoMonitorMessage
+            'no_monitor': handleNoMonitorMessage,
+            'timeout': handleTimeoutMessage
         };
 
         function handleMessage(msg) {
@@ -627,6 +628,12 @@
         // Handle No_Monitor message
         function handleNoMonitorMessage(msg) {
             addLogEntry('info', 'No active monitor to rebind.');
+        }
+        // Handle Timeout message
+        function handleTimeoutMessage(msg) {
+            addLogEntry('warn', '⚠️ Execution time limit (Timeout) has been reached. \
+            The system will stop sending new requests, but to ensure result integrity, all previously submitted requests will continue running. \
+            GPU resources remain in use, and progress updates will continue.');
         }
         // Handle unknown message
         function handleUnknownMessage(msg) {
@@ -1086,14 +1093,15 @@
             
             // Add log entry
             addLogEntry('info', 'Stopping API Throughput Monitor...');
-            
+            addLogEntry('warn', '⚠️ Request generation has been stopped, but the GPU is still processing previously submitted tasks. \
+                                 GPU utilization may remain high for a short period.');
             sendStopCommand();
         });
 
         let isRunning = false;
         function runBenchmark(){
             if (isRunning) {
-                addLogEntry('warn', 'Benchmark is already running.');
+                addLogEntry('warn', '⚠️ Benchmark is already running.');
                 return;
             }
         
@@ -1147,7 +1155,7 @@
             };
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify(params));
-                addLogEntry('info', 'Sent start command.');
+                // addLogEntry('info', 'Sent start command.');
             } else {
                 addLogEntry('error', 'WebSocket not connected.');
             }
@@ -1159,9 +1167,9 @@
               ws.send(JSON.stringify({
                 command: "stop"
               }));
-              addLogEntry('info', 'Sent stop command.');
+              // addLogEntry('info', 'Sent stop command.');
             } else {
-              addLogEntry('warn', '🛑 Cannot send stop, connection not open.');
+              addLogEntry('error', '🛑 Cannot send stop, connection not open.');
             }
         }
 
