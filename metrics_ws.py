@@ -302,7 +302,7 @@ class APIThroughputMonitor:
 
     async def make_request(self, session_id):
         global count_id
-        request_id = str(uuid.uuid4())
+        # request_id = str(uuid.uuid4())
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}"
@@ -314,6 +314,10 @@ class APIThroughputMonitor:
             "messages": messages
         }
         count_id += 1
+        
+        start_time = time.time()
+        next_token_time = start_time
+        final_response = ""
 
         try:
             async with self.lock:
@@ -322,15 +326,12 @@ class APIThroughputMonitor:
                     "start_time": time.time(),
                     "response_time": None,
                     "error": None,
-                    "total_chars": 0,                   # Volecity = total_chars / (response_time - start_time - first_token_latency)
-                    "chunks_received": 0,
-                    "tokens_latency": [],
-                    "tokens_amount": [],
-                    "first_token_latency": -1,
+                    "total_chars": 0,                   # only response
+                    "chunks_received": 0,               # only response
+                    "tokens_latency": [],               # only response, unit: s
+                    "tokens_amount": [],                # only response
+                    "first_token_latency": -1,          # unit: s
                 }
-
-            start_time = time.time()
-            next_token_time = start_time
             
             # Make request with SSL verification disabled
             async with httpx.AsyncClient(verify=False, timeout=180.0) as client:
@@ -353,8 +354,9 @@ class APIThroughputMonitor:
                             output_record.write(json.dumps(data) + "\n")
 
                             content = data["data"]["choices"][0]["delta"].get("content", "")
+                            latency = round(time.time() - next_token_time, 5)
+                            final_response += content
                             async with self.lock:
-                                latency = round(time.time() - next_token_time, 5)
                                 self.sessions[session_id]["status"] = "Processing"
                                 self.sessions[session_id]["chunks_received"] += 1
                                 self.sessions[session_id]["total_chars"] += len(content)
@@ -368,6 +370,10 @@ class APIThroughputMonitor:
 
             response_time = time.time() - start_time
             async with self.lock:
+                first_token_latency = self.sessions[session_id]["first_token_latency"]
+                total_chars = self.sessions[session_id]["total_chars"]
+                duration_for_speed = response_time - first_token_latency if first_token_latency > 0 else response_time
+                chars_per_sec = round(total_chars / duration_for_speed, 3) if duration_for_speed > 0 else 0.0
                 self.sessions[session_id].update({
                     "status": "Completed",
                     "response_time": f"{response_time:.2f}s",
@@ -376,15 +382,18 @@ class APIThroughputMonitor:
                 self.successful_requests += 1
                 
                 log_record = {
-                    "request_id": request_id,
+                    # "request_id": request_id,
                     "session_id": session_id,
                     "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
-                    "latency_ms": round(response_time * 1000, 2),
+                    "prompt": messages[0]["content"],
+                    "response": final_response,
+                    "latency": round(response_time, 5),
                     "status": "success",
                     "status_code": status_code,
-                    "total_chars": self.sessions[session_id]["total_chars"],
+                    "total_chars": total_chars,
                     "chunks_received": self.sessions[session_id]["chunks_received"],
-                    "first_token_latency": self.sessions[session_id]["first_token_latency"],
+                    "first_token_latency": first_token_latency,
+                    "chars_per_sec": chars_per_sec
                 }
                 self.request_logs.append(log_record)
                 # ✅ 寫入檔案
@@ -401,10 +410,10 @@ class APIThroughputMonitor:
                 self.failed_requests += 1
 
                 log_record = {
-                    "request_id": request_id,
+                    # "request_id": request_id,
                     "session_id": session_id,
                     "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
-                    "latency_ms": round((time.time() - start_time) * 1000, 2),
+                    "latency": round(time.time() - start_time, 5),
                     "status": "timeout",
                     "error": str(e),
                 }
@@ -422,10 +431,10 @@ class APIThroughputMonitor:
                 self.failed_requests += 1
                 
                 log_record = {
-                    "request_id": request_id,
+                    # "request_id": request_id,
                     "session_id": session_id,
                     "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
-                    "latency_ms": round((time.time() - start_time) * 1000, 2),
+                    "latency": round(time.time() - start_time, 5),
                     "status": "fail",
                     "error": str(e),
                 }
