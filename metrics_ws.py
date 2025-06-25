@@ -420,6 +420,26 @@ class APIThroughputMonitor:
                 self.request_logs.append(log_record)
                 with open(self.request_log_file, "a", encoding="utf-8") as f:
                     f.write(json.dumps(log_record) + "\n")
+        except asyncio.CancelledError:
+            async with self.lock:
+                self.sessions[session_id].update({
+                    "status": "Cancelled",
+                    "error": "Cancelled by stop",
+                    "response_time": "N/A"
+                })
+                self.failed_requests += 1
+
+                log_record = {
+                    "session_id": session_id,
+                    "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
+                    "latency": round(time.time() - start_time, 2),
+                    "status": "cancelled",
+                    "error": "Cancelled by stop",
+                }
+                self.request_logs.append(log_record)
+                with open(self.request_log_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(log_record) + "\n")
+            raise  # 很重要，保證取消不被吞掉
         except Exception as e:
             async with self.lock:
                 logger.error(f"Error in session {session_id}: {str(e)}")
@@ -463,6 +483,7 @@ class APIThroughputMonitor:
         session_id = 0
         self.running = True
         self._stop_requested = False
+        self.tasks = []
         
         logger.info(f"🧪 Starting run loop for {duration}s with max_concurrent={self.max_concurrent}")
         
@@ -483,7 +504,9 @@ class APIThroughputMonitor:
                         session_id += 1
                         async with self.lock:
                             self.active_sessions += 1
-                        asyncio.create_task(self.make_request(session_id))
+                        task = asyncio.create_task(self.make_request(session_id))
+                        self.tasks.append(task)
+                    
                     if self.should_update_display():
                         if self.websocket and self.websocket.client_state == WebSocketState.CONNECTED:
                             live.update(await self.generate_status_table(self.websocket))
@@ -491,6 +514,12 @@ class APIThroughputMonitor:
             except asyncio.CancelledError:
                 logger.info("Monitor task was cancelled")
             finally:
+                logger.info("🛑 Stopping... Cancelling all running make_request tasks")
+                for task in self.tasks:
+                    task.cancel()
+                await asyncio.gather(*self.tasks, return_exceptions=True)
+                self.tasks.clear()
+                
                 self.pending_messages = []
                 # Send log file to frontend
                 file_info = {
@@ -527,7 +556,6 @@ class APIThroughputMonitor:
                 self.running = False
                 self._stop_requested = False
                 logger.info("🛑 run() has ended (timeout or stopped).")
-                logger.info(f"Pending message: {self.pending_messages}")
                 # logger.info(f"File Path: {file_info}")
 
     async def stop_monitor(self):
