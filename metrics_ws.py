@@ -99,6 +99,7 @@ class APIThroughputMonitor:
         self.pending_messages = []
         self.request_logs = []
         self.request_log_file = request_log_file
+        self.semaphore = asyncio.Semaphore(self.max_concurrent)
         
         # Initialize log file
         with open(Path(self.output_dir, self.log_file).resolve(), 'w') as f:
@@ -209,7 +210,6 @@ class APIThroughputMonitor:
             ftls = []
             try:
                 ftls = [self.sessions[id]['first_token_latency'] for id in self.sessions]
-                logger.debug(ftls)
             except KeyError as e:
                 logger.error(e)
                 ftls = []
@@ -301,172 +301,127 @@ class APIThroughputMonitor:
     
 
     async def make_request(self, session_id):
-        global count_id
-        # request_id = str(uuid.uuid4())
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-        messages = questions[session_id % len(questions)]
-        payload = {
-            "model": self.model,
-            "stream": True,
-            "messages": messages
-        }
-        count_id += 1
-        
-        start_time = time.time()
-        next_token_time = start_time
-        final_response = ""
-
-        try:
-            async with self.lock:
-                self.sessions[session_id] = {
-                    "status": "Starting",
-                    "start_time": time.time(),
-                    "response_time": None,
-                    "error": None,
-                    "total_chars": 0,                   # only response
-                    "chunks_received": 0,               # only response
-                    "tokens_latency": [],               # only response, unit: s
-                    "tokens_amount": [],                # only response
-                    "first_token_latency": -1,          # unit: s
-                }
+        async with self.semaphore:
+            global count_id
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}"
+            }
+            messages = questions[session_id % len(questions)]
+            payload = {
+                "model": self.model,
+                "stream": True,
+                "messages": messages
+            }
+            count_id += 1
             
-            # Make request with SSL verification disabled
-            async with httpx.AsyncClient(verify=False, timeout=180.0) as client:
-                async with client.stream("POST", f"{self.api_url}/chat/completions", headers=headers, json=payload) as response:
-                    status_code = response.status_code
-                    payload_record = FileHandler(f"{self.output_dir}/in_{runtime_uuid}_{session_id}.json", "w", True)
-                    output_record = FileHandler(f"{self.output_dir}/out_{runtime_uuid}_{session_id}.json", "w", True)
+            start_time = time.time()
+            next_token_time = start_time
+            final_response = ""
 
-                    payload_record.write(json.dumps(payload))
-                    payload_record.close()
+            try:
+                async with self.lock:
+                    self.sessions[session_id] = {
+                        "status": "Starting",
+                        "start_time": time.time(),
+                        "response_time": None,
+                        "error": None,
+                        "total_chars": 0,                   # only response
+                        "chunks_received": 0,               # only response
+                        "tokens_latency": [],               # only response, unit: s
+                        "tokens_amount": [],                # only response
+                        "first_token_latency": -1,          # unit: s
+                    }
+                
+                # Make request with SSL verification disabled
+                async with httpx.AsyncClient(verify=False, timeout=180.0) as client:
+                    async with client.stream("POST", f"{self.api_url}/chat/completions", headers=headers, json=payload) as response:
+                        status_code = response.status_code
+                        payload_record = FileHandler(f"{self.output_dir}/in_{runtime_uuid}_{session_id}.json", "w", True)
+                        output_record = FileHandler(f"{self.output_dir}/out_{runtime_uuid}_{session_id}.json", "w", True)
 
-                    async for line in response.aiter_lines():
-                        if time.time() > self.end_time:
-                            raise TimeoutError("Request exceeded time limit.")
+                        payload_record.write(json.dumps(payload))
+                        payload_record.close()
+
+                        async for line in response.aiter_lines():
+                            if line:
+                                data = self.process_stream_info(line)
+                                if data is None:
+                                    break
+                                output_record.write(json.dumps(data) + "\n")
+
+                                content = data["data"]["choices"][0]["delta"].get("content", "")
+                                latency = round(time.time() - next_token_time, 5)
+                                final_response += content
+                                async with self.lock:
+                                    self.sessions[session_id]["status"] = "Processing"
+                                    self.sessions[session_id]["chunks_received"] += 1
+                                    self.sessions[session_id]["total_chars"] += len(content)
+                                    self.sessions[session_id]["tokens_amount"].append(len(content))
+                                    self.sessions[session_id]["tokens_latency"].append(latency)
+                                    if self.sessions[session_id]["first_token_latency"] == -1:
+                                        self.sessions[session_id]["first_token_latency"] = latency
+                                    next_token_time = time.time()
+
+                        output_record.close()
+
+                response_time = time.time() - start_time
+                async with self.lock:
+                    first_token_latency = self.sessions[session_id]["first_token_latency"]
+                    total_chars = self.sessions[session_id]["total_chars"]
+                    duration_for_speed = response_time - first_token_latency if first_token_latency > 0 else response_time
+                    chars_per_sec = round(total_chars / duration_for_speed, 3) if duration_for_speed > 0 else 0.0
+                    self.sessions[session_id].update({
+                        "status": "Completed",
+                        "response_time": f"{response_time:.2f}s",
+                        "error": None
+                    })
+                    self.successful_requests += 1
                     
-                        if line:
-                            data = self.process_stream_info(line)
-                            if data is None:
-                                break
-                            output_record.write(json.dumps(data) + "\n")
+                    log_record = {
+                        "session_id": session_id,
+                        "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
+                        "prompt": messages[0]["content"],
+                        "response": final_response,
+                        "latency": round(response_time, 5),
+                        "status": "success",
+                        "status_code": status_code,
+                        "total_chars": total_chars,
+                        "chunks_received": self.sessions[session_id]["chunks_received"],
+                        "first_token_latency": first_token_latency,
+                        "chars_per_sec": chars_per_sec
+                    }
+                    self.request_logs.append(log_record)
+                    # ✅ 寫入檔案
+                    with open(self.request_log_file, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(log_record) + "\n")
+            except Exception as e:
+                async with self.lock:
+                    logger.error(f"Error in session {session_id}: {str(e)}")
+                    self.sessions[session_id].update({
+                        "status": "Failed",
+                        "error": str(e),
+                        "response_time": "N/A"
+                    })
+                    self.failed_requests += 1
+                    
+                    log_record = {
+                        # "request_id": request_id,
+                        "session_id": session_id,
+                        "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
+                        "latency": round(time.time() - start_time, 5),
+                        "status": "fail",
+                        "error": str(e),
+                    }
+                    self.request_logs.append(log_record)
+                    # ✅ 寫入檔案
+                    with open(self.request_log_file, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(log_record) + "\n")
 
-                            content = data["data"]["choices"][0]["delta"].get("content", "")
-                            latency = round(time.time() - next_token_time, 5)
-                            final_response += content
-                            async with self.lock:
-                                self.sessions[session_id]["status"] = "Processing"
-                                self.sessions[session_id]["chunks_received"] += 1
-                                self.sessions[session_id]["total_chars"] += len(content)
-                                self.sessions[session_id]["tokens_amount"].append(len(content))
-                                self.sessions[session_id]["tokens_latency"].append(latency)
-                                if self.sessions[session_id]["first_token_latency"] == -1:
-                                    self.sessions[session_id]["first_token_latency"] = latency
-                                next_token_time = time.time()
-
-                    output_record.close()
-
-            response_time = time.time() - start_time
-            async with self.lock:
-                first_token_latency = self.sessions[session_id]["first_token_latency"]
-                total_chars = self.sessions[session_id]["total_chars"]
-                duration_for_speed = response_time - first_token_latency if first_token_latency > 0 else response_time
-                chars_per_sec = round(total_chars / duration_for_speed, 3) if duration_for_speed > 0 else 0.0
-                self.sessions[session_id].update({
-                    "status": "Completed",
-                    "response_time": f"{response_time:.2f}s",
-                    "error": None
-                })
-                self.successful_requests += 1
-                
-                log_record = {
-                    # "request_id": request_id,
-                    "session_id": session_id,
-                    "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
-                    "prompt": messages[0]["content"],
-                    "response": final_response,
-                    "latency": round(response_time, 5),
-                    "status": "success",
-                    "status_code": status_code,
-                    "total_chars": total_chars,
-                    "chunks_received": self.sessions[session_id]["chunks_received"],
-                    "first_token_latency": first_token_latency,
-                    "chars_per_sec": chars_per_sec
-                }
-                self.request_logs.append(log_record)
-                # ✅ 寫入檔案
-                with open(self.request_log_file, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(log_record) + "\n")
-        except TimeoutError as e:
-            # ⛔ 單獨處理 Timeout
-            async with self.lock:
-                self.sessions[session_id].update({
-                    "status": "Timeout",
-                    "error": str(e),
-                    "response_time": "N/A"
-                })
-                self.failed_requests += 1
-
-                log_record = {
-                    # "request_id": request_id,
-                    "session_id": session_id,
-                    "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
-                    "latency": round(time.time() - start_time, 5),
-                    "status": "timeout",
-                    "error": str(e),
-                }
-                self.request_logs.append(log_record)
-                with open(self.request_log_file, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(log_record) + "\n")
-        except asyncio.CancelledError:
-            async with self.lock:
-                self.sessions[session_id].update({
-                    "status": "Cancelled",
-                    "error": "Cancelled by stop",
-                    "response_time": "N/A"
-                })
-                self.failed_requests += 1
-
-                log_record = {
-                    "session_id": session_id,
-                    "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
-                    "latency": round(time.time() - start_time, 2),
-                    "status": "cancelled",
-                    "error": "Cancelled by stop",
-                }
-                self.request_logs.append(log_record)
-                with open(self.request_log_file, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(log_record) + "\n")
-            raise  # 很重要，保證取消不被吞掉
-        except Exception as e:
-            async with self.lock:
-                logger.error(f"Error in session {session_id}: {str(e)}")
-                self.sessions[session_id].update({
-                    "status": "Failed",
-                    "error": str(e),
-                    "response_time": "N/A"
-                })
-                self.failed_requests += 1
-                
-                log_record = {
-                    # "request_id": request_id,
-                    "session_id": session_id,
-                    "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
-                    "latency": round(time.time() - start_time, 5),
-                    "status": "fail",
-                    "error": str(e),
-                }
-                self.request_logs.append(log_record)
-                # ✅ 寫入檔案
-                with open(self.request_log_file, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(log_record) + "\n")
-
-        finally:
-            async with self.lock:
-                self.total_requests += 1
-                self.active_sessions -= 1
+            finally:
+                async with self.lock:
+                    self.total_requests += 1
+                    self.active_sessions -= 1
 
     def should_update_display(self):
         current_time = time.time()
@@ -483,7 +438,6 @@ class APIThroughputMonitor:
         session_id = 0
         self.running = True
         self._stop_requested = False
-        self.tasks = []
         
         logger.info(f"🧪 Starting run loop for {duration}s with max_concurrent={self.max_concurrent}")
         
@@ -494,18 +448,18 @@ class APIThroughputMonitor:
             auto_refresh=True
         ) as live:
             try: 
-                while time.time() < self.end_time and self.running and not self._stop_requested:
+                while (time.time() < self.end_time and self.running and not self._stop_requested) \
+                       or self.active_sessions > 0:
                     current_time = time.time()
 
                     if current_time - self.last_log_time >= 1.0:
                         await self.log_status()
 
-                    if self.active_sessions < self.max_concurrent:
+                    if (time.time() < self.end_time and self.running and not self._stop_requested) and self.active_sessions < self.max_concurrent:
                         session_id += 1
                         async with self.lock:
                             self.active_sessions += 1
-                        task = asyncio.create_task(self.make_request(session_id))
-                        self.tasks.append(task)
+                        asyncio.create_task(self.make_request(session_id))
                     
                     if self.should_update_display():
                         if self.websocket and self.websocket.client_state == WebSocketState.CONNECTED:
@@ -514,12 +468,8 @@ class APIThroughputMonitor:
             except asyncio.CancelledError:
                 logger.info("Monitor task was cancelled")
             finally:
-                logger.info("🛑 Stopping... Cancelling all running make_request tasks")
-                for task in self.tasks:
-                    task.cancel()
-                await asyncio.gather(*self.tasks, return_exceptions=True)
-                self.tasks.clear()
-                
+                if self.websocket and self.websocket.client_state == WebSocketState.CONNECTED:
+                    live.update(await self.generate_status_table(self.websocket))
                 self.pending_messages = []
                 # Send log file to frontend
                 file_info = {
