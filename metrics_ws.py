@@ -105,6 +105,10 @@ class APIThroughputMonitor:
         with open(Path(self.output_dir, self.log_file).resolve(), 'w') as f:
             f.write('')
             f.close()
+            
+        with open(Path(self.output_dir, self.request_log_file).resolve(), 'w') as f:
+            f.write('')
+            f.close()
         
     def get_session_status(self, session_id, info):
         status_style = {
@@ -393,7 +397,7 @@ class APIThroughputMonitor:
                     }
                     self.request_logs.append(log_record)
                     # ✅ 寫入檔案
-                    with open(self.request_log_file, "a", encoding="utf-8") as f:
+                    with open(Path(self.output_dir, self.request_log_file).resolve(), 'a') as f:
                         f.write(json.dumps(log_record) + "\n")
             except asyncio.CancelledError:
                 async with self.lock:
@@ -412,7 +416,7 @@ class APIThroughputMonitor:
                         "error": "Cancelled by stop",
                     }
                     self.request_logs.append(log_record)
-                    with open(self.request_log_file, "a", encoding="utf-8") as f:
+                    with open(Path(self.output_dir, self.request_log_file).resolve(), 'a') as f:
                         f.write(json.dumps(log_record) + "\n")
                 raise  # 很重要，保證取消不被吞掉
             except Exception as e:
@@ -435,7 +439,7 @@ class APIThroughputMonitor:
                     }
                     self.request_logs.append(log_record)
                     # ✅ 寫入檔案
-                    with open(self.request_log_file, "a", encoding="utf-8") as f:
+                    with open(Path(self.output_dir, self.request_log_file).resolve(), 'a') as f:
                         f.write(json.dumps(log_record) + "\n")
 
             finally:
