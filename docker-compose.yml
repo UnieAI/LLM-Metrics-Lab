@@ -6,5 +6,9 @@ services:
     container_name: llm-metrics-lab
     ports:
       - "8000:8000"
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
     command: python main.py
 
