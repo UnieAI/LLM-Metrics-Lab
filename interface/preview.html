@@ -302,7 +302,7 @@
                                         <label for="plot-file" class="form-label">Chart File <i class="bi bi-question-circle help-icon" data-bs-toggle="tooltip" title="Path to the plot file for monitoring data"></i></label>
                                         <input type="text" class="form-control" id="plot-file" placeholder="api_metrics_<%Y%m%d_%H%M%S>.png">
                                     </div>
-                                    <div class="col-md-6">
+                                    <!-- <div class="col-md-6">
                                         <label for="console-log-level" class="form-label">Console Log Level <i class="bi bi-question-circle help-icon" data-bs-toggle="tooltip" title="Logging level for console output"></i></label>
                                         <select class="form-select" id="console-log-level">
                                             <option value="debug">Debug</option>
@@ -319,7 +319,7 @@
                                             <option value="warning" selected>Warning</option>
                                             <option value="error">Error</option>
                                         </select>
-                                    </div>
+                                    </div> -->
                                 </div>
                             </div>
                             <div class="tab-pane fade" id="dataset" role="tabpanel" aria-labelledby="dataset-tab">
@@ -1124,8 +1124,8 @@
             let conversation_str = template_type === "conversation" ? document.getElementById('conversation').value : ''
             let template_str = template_type === "template" ? document.getElementById('template').value : ''
             // log level
-            let console_log_level = document.getElementById('console-log-level').value
-            let file_log_level = document.getElementById('file-log-level').value
+            // let console_log_level = document.getElementById('console-log-level').value
+            // let file_log_level = document.getElementById('file-log-level').value
             // TODO: replace this creation with WebSocket connection info.
 
             const sessionCard = document.getElementById('sessions-grid');
@@ -1149,8 +1149,8 @@
                     dataset: datasets,
                     template: template_str,
                     conversation: conversation_str,
-                    console_log_level: console_log_level,
-                    file_log_level: file_log_level
+                    // console_log_level: console_log_level,
+                    // file_log_level: file_log_level
                 }
             };
             if (ws && ws.readyState === WebSocket.OPEN) {
