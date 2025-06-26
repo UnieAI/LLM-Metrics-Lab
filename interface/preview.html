@@ -291,12 +291,16 @@
                                         <input type="number" class="form-control" id="max-concurrent" value="10" min="1" max="100">
                                     </div>
                                     <div class="col-md-6">
-                                        <label for="log-file" class="form-label">Log File <i class="bi bi-question-circle help-icon" data-bs-toggle="tooltip" title="Path to the log file for monitoring data"></i></label>
-                                        <input type="text" class="form-control" id="log-file" value="api_monitor.jsonl">
-                                    </div>
-                                    <div class="col-md-6">
                                         <label for="output-dir" class="form-label">Output Directory <i class="bi bi-question-circle help-icon" data-bs-toggle="tooltip" title="Directory to save request/response files"></i></label>
                                         <input type="text" class="form-control" id="output-dir" placeholder="output">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label for="log-file" class="form-label">Log File <i class="bi bi-question-circle help-icon" data-bs-toggle="tooltip" title="Path to the log file for monitoring data"></i></label>
+                                        <input type="text" class="form-control" id="log-file" placeholder="api_monitor_<%Y%m%d_%H%M%S>.jsonl">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label for="plot-file" class="form-label">Chart File <i class="bi bi-question-circle help-icon" data-bs-toggle="tooltip" title="Path to the plot file for monitoring data"></i></label>
+                                        <input type="text" class="form-control" id="plot-file" placeholder="api_metrics_<%Y%m%d_%H%M%S>.png">
                                     </div>
                                     <div class="col-md-6">
                                         <label for="console-log-level" class="form-label">Console Log Level <i class="bi bi-question-circle help-icon" data-bs-toggle="tooltip" title="Logging level for console output"></i></label>
@@ -390,14 +394,14 @@
                         <div>
                             <i class="bi bi-speedometer2 me-2"></i>Monitoring Dashboard
                         </div>
-                        <div class="btn-group btn-group-sm" role="group">
+                        <!-- <div class="btn-group btn-group-sm" role="group">
                             <button type="button" class="btn btn-outline-secondary" id="refresh-btn">
                                 <i class="bi bi-arrow-clockwise"></i> Refresh
                             </button>
                             <button type="button" class="btn btn-outline-secondary" id="clear-btn">
                                 <i class="bi bi-trash"></i> Clear
                             </button>
-                        </div>
+                        </div> -->
                     </div>
                     <div class="card-body">
                         <div class="row mb-4">
@@ -487,8 +491,15 @@
 
     <script>
         // WebSocket integration for preview.html frontend
+        let token = localStorage.getItem("client_token");
+        if (!token) {
+            token = crypto.randomUUID();  // 或用自訂的識別碼
+            localStorage.setItem("client_token", token);
+        }
+
         const protocol = location.protocol === "https:" ? "wss" : "ws";
-        const wsUrl = `${protocol}://${location.host}/ws`;
+        const wsUrl = `${protocol}://${location.host}/ws?token=${token}`;
+        // const wsUrl = `${protocol}://${location.host}/ws`;
         let ws;
         const sessions = {};
         
@@ -503,6 +514,13 @@
             const rows = data.sessions;
             console.log(rows)
             const dashboard = data.dashboard;
+
+            if (rows && Object.keys(rows).length > 0) {
+                const placeholder = document.querySelector('#sessions-grid .session-grid-empty');
+                if (placeholder) {
+                    placeholder.remove();
+                }
+            }
         
             Object.entries(rows).forEach(([id, sessionData]) => {
                 let session = sessions[id];
@@ -515,6 +533,7 @@
                 session.status = sessionData.status;
                 session.chars = sessionData.total_chars;
                 session.chunks = sessionData.chunks_received;
+                // session.firstTokenLatency = sessionData.first_token_latency;
 
                 if(session.stopped){
                     return
@@ -549,6 +568,7 @@
             // Open Websocket connection
             ws.onopen = () => {
                 addLogEntry('success', 'WebSocket connected');
+                ws.send(JSON.stringify({ command: "rebind" }));
             };
             // Close Websocket connection
             ws.onclose = () => {
@@ -564,7 +584,10 @@
         const messageHandlers = {
             'stats_update': handleStatsUpdateMessage,
             'completed': handleCompletedMessage,
-            'file': handleFileMessage
+            'file': handleFileMessage,
+            'rebound': handleReboundMessage,
+            'no_monitor': handleNoMonitorMessage,
+            'timeout': handleTimeoutMessage
         };
 
         function handleMessage(msg) {
@@ -588,6 +611,29 @@
         function handleFileMessage(msg) {
             addLogEntry('success', 'Recieve File.');
             updateFileSection(msg.fileName, msg.fileUrl);
+        }
+        // Handle Rebound message
+        function handleReboundMessage(msg) {
+            addLogEntry('info', 'Rebound to previous monitor.');
+            if (msg.running) {
+                document.getElementById('start-btn').disabled = true;
+                document.getElementById('stop-btn').disabled = false;
+                document.getElementById('status-indicator').className = 'status-indicator status-running';
+            } else {
+                document.getElementById('start-btn').disabled = false;
+                document.getElementById('stop-btn').disabled = true;
+                document.getElementById('status-indicator').className = 'status-indicator status-stopped';
+            }
+        }
+        // Handle No_Monitor message
+        function handleNoMonitorMessage(msg) {
+            addLogEntry('info', 'No active monitor to rebind.');
+        }
+        // Handle Timeout message
+        function handleTimeoutMessage(msg) {
+            addLogEntry('warn', '⚠️ Execution time limit (Timeout) has been reached. \
+            The system will stop sending new requests, but to ensure result integrity, all previously submitted requests will continue running. \
+            GPU resources remain in use, and progress updates will continue.');
         }
         // Handle unknown message
         function handleUnknownMessage(msg) {
@@ -757,6 +803,7 @@
             this.promptTokens = 0;
             this.sessionCard = this.createCard();
             this.firstChunkTime = null;
+            // this.firstTokenLatency = 0;
             this.endTime = null;
             this.rawChunks = [];            // store each chunk's raw data line
             this.finalResult = '';
@@ -788,28 +835,33 @@
             const sessionBody = document.createElement('div');
             sessionBody.className = 'session-body';
 
-            // Row 1: Response Time + Chars
-            const row1 = document.createElement('div'); row1.className = 'row mb-2';
-            const col1 = document.createElement('div'); col1.className = 'col-6';
-            const responseTime = document.createElement('strong'); responseTime.textContent = 'Response Time: ';
-            const responseTimeValue = document.createElement('span');
-            col1.appendChild(responseTime); col1.appendChild(responseTimeValue);
-            const col2 = document.createElement('div'); col2.className = 'col-6';
-            const chars = document.createElement('strong'); chars.textContent = 'Chars: ';
-            const charsValue = document.createElement("span"); charsValue.textContent = '0';
-            col2.appendChild(chars); col2.appendChild(charsValue);
-            row1.appendChild(col1); row1.appendChild(col2);
+            const createInfoRow = (labelText, valueClass) => {
+                const row = document.createElement('div');
+                row.className = 'row mb-1';
+                const col = document.createElement('div');
+                col.className = 'col-12';
+                const label = document.createElement('strong');
+                label.textContent = labelText;
+                const value = document.createElement('span');
+                value.className = valueClass;
+                value.textContent = '0';
+                col.appendChild(label);
+                col.appendChild(value);
+                row.appendChild(col);
+                return { row, value };
+            };
 
-            // Row 2: Chunks
-            const row2 = document.createElement('div'); row2.className = 'row';
-            const col3 = document.createElement('div'); col3.className = 'col-12';
-            const chunks = document.createElement('strong'); chunks.textContent = 'Chunks: ';
-            const chunksValue = document.createElement("span"); chunksValue.textContent = '0';
-            col3.appendChild(chunks); col3.appendChild(chunksValue);
-            row2.appendChild(col3);
+            // 各個 row 建立
+            const { row: responseTimeRow, value: responseTimeValue } = createInfoRow('Response Time: ', 'response-time');
+            const { row: charsRow, value: charsValue } = createInfoRow('Chars: ', 'chars');
+            const { row: chunksRow, value: chunksValue } = createInfoRow('Chunks: ', 'chunks');
+            // const { row: firstLatencyRow, value: firstLatencyValue } = createInfoRow('First Token Latency: ', 'first-token-latency');
 
-            // Add to session body
-            sessionBody.appendChild(row1); sessionBody.appendChild(row2);
+            // 加入到 sessionBody
+            sessionBody.appendChild(responseTimeRow);
+            sessionBody.appendChild(charsRow);
+            sessionBody.appendChild(chunksRow);
+            // sessionBody.appendChild(firstLatencyRow);
 
             // Session Footer
             const sessionFooter = document.createElement('div');
@@ -829,6 +881,7 @@
                 chunks: chunksValue,
                 chars: charsValue,
                 time: responseTimeValue,
+                // firstLatency: firstLatencyValue,
                 status: sessionStatus,
                 footer: footerText,
             };
@@ -843,6 +896,7 @@
             this.sessionCard.status.textContent = this.status;
             this.sessionCard.status.className = `session-status ${statusClasses[this.status]}`;
             this.sessionCard.time.textContent = `${elapsed_time.toFixed(2)}s`;
+            // this.sessionCard.firstLatency.textContent = this.firstTokenLatency;
             this.sessionCard.footer.textContent = `Updated ${new Date().toLocaleTimeString()}`;
         };
 
@@ -1039,57 +1093,69 @@
             
             // Add log entry
             addLogEntry('info', 'Stopping API Throughput Monitor...');
-            
+            addLogEntry('warn', '⚠️ Request generation has been stopped, but the GPU is still processing previously submitted tasks. \
+                                 GPU utilization may remain high for a short period.');
             sendStopCommand();
         });
 
         let isRunning = false;
         function runBenchmark(){
             if (isRunning) {
-                addLogEntry('warn', 'Benchmark is already running.');
+                addLogEntry('warn', '⚠️ Benchmark is already running.');
                 return;
             }
         
             isRunning = true;
+            // Basic
             let model = document.getElementById('model').value || 'Not specified'
-            let api_url = document.getElementById('api-url').value || 'https://api.openai.com/v1)'
+            let api_url = document.getElementById('api-url').value || 'https://api.openai.com/v1'
             let api_key = document.getElementById('api-key').value || ''
-            let max_concurrent = parseInt(document.getElementById('max-concurrent').value) // TODO: value check
-            let time_limit = parseInt(document.getElementById('time-limit').value)
+            let time_limit_input = parseInt(document.getElementById('time-limit').value);
+            let time_limit = Number.isNaN(time_limit_input) ? 120 : time_limit_input;
+            // Advanced
+            let max_concurrent_input = parseInt(document.getElementById('max-concurrent').value);
+            let max_concurrent = Number.isNaN(max_concurrent_input) ? 10 : max_concurrent_input;  // TODO: value check
+            let output_dir = document.getElementById('output-dir').value
+            let log_file = document.getElementById('log-file').value
+            let plot_file = document.getElementById('plot-file').value
+            // Dataset
             let datasets = document.getElementById('dataset-name').value
             let template_type = document.getElementById('template-type').value
             let conversation_str = template_type === "conversation" ? document.getElementById('conversation').value : ''
             let template_str = template_type === "template" ? document.getElementById('template').value : ''
+            // log level
+            let console_log_level = document.getElementById('console-log-level').value
+            let file_log_level = document.getElementById('file-log-level').value
             // TODO: replace this creation with WebSocket connection info.
-
-            // const sessionGrid = document.getElementById('sessions-grid');
-            // sessionGrid.innerHTML = ""; // Clear previous sessions
 
             const sessionCard = document.getElementById('sessions-grid');
             sessionCard.innerHTML = "";
 
             for(let session in Object.keys(sessions)){
-                // sessions[session].status = "Stop"
-                // sessions[session].update()
                 delete sessions[session]
             }
 
             const params = {
                 command: 'start',
                 params: {
-                    model: document.getElementById('model').value,
-                    api_url: document.getElementById('api-url').value,
-                    api_key: document.getElementById('api-key').value,
-                    max_concurrent: parseInt(document.getElementById('max-concurrent').value),
-                    time_limit: parseInt(document.getElementById('time-limit').value),
-                    dataset: document.getElementById('dataset-name').value,
+                    model: model,
+                    api_url: api_url,
+                    api_key: api_key,
+                    time_limit: time_limit,
+                    max_concurrent: max_concurrent,
+                    output_dir: output_dir,
+                    log_file: log_file,
+                    plot_file: plot_file,
+                    dataset: datasets,
                     template: template_str,
                     conversation: conversation_str,
+                    console_log_level: console_log_level,
+                    file_log_level: file_log_level
                 }
             };
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify(params));
-                addLogEntry('info', 'Sent start command.');
+                // addLogEntry('info', 'Sent start command.');
             } else {
                 addLogEntry('error', 'WebSocket not connected.');
             }
@@ -1101,9 +1167,9 @@
               ws.send(JSON.stringify({
                 command: "stop"
               }));
-              addLogEntry('info', 'Sent stop command.');
+              // addLogEntry('info', 'Sent stop command.');
             } else {
-              addLogEntry('warn', '🛑 Cannot send stop, connection not open.');
+              addLogEntry('error', '🛑 Cannot send stop, connection not open.');
             }
         }
 

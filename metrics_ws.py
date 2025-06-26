@@ -18,6 +18,7 @@ from utils.url import normalize_url
 from datasets import load_dataset
 import websockets
 from fastapi import WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 import httpx
 
 from utils.logger_config import setup_logger
@@ -71,7 +72,7 @@ class FileHandler:
         self.close()
 
 class APIThroughputMonitor:
-    def __init__(self, model: str, api_url: str, api_key: str, max_concurrent: int = 5, columns: int = 3, log_file: str = "api_monitor.jsonl", plot_file: str = "api_metrics.png", output_dir: str = None):
+    def __init__(self, model: str, api_url: str, api_key: str, max_concurrent: int = 5, columns: int = 3, log_file: str = "api_monitor.jsonl", plot_file: str = "api_metrics.png", request_log_file: str = "request_api_monitor.jsonl", output_dir: str = None):
         self.model = model
         self.api_url = api_url
         self.api_key = api_key
@@ -94,9 +95,18 @@ class APIThroughputMonitor:
         self.output_dir = output_dir
         self.running = True
         self._stop_requested = False
+        self.websocket = None
+        self.pending_messages = []
+        self.request_logs = []
+        self.request_log_file = request_log_file
+        self.semaphore = asyncio.Semaphore(self.max_concurrent)
         
         # Initialize log file
         with open(Path(self.output_dir, self.log_file).resolve(), 'w') as f:
+            f.write('')
+            f.close()
+            
+        with open(Path(self.output_dir, self.request_log_file).resolve(), 'w') as f:
             f.write('')
             f.close()
         
@@ -113,7 +123,8 @@ class APIThroughputMonitor:
             f"[{status_style}]{info['status']:10}[/{status_style}] | "
             f"Time: {info['response_time'] or '-':8} | "
             f"Chars: {info['total_chars']:5} | "
-            f"Chunks: {info['chunks_received']:3}"
+            f"Chunks: {info['chunks_received']:3} | "
+            f"First Token Latency: {info['first_token_latency']:3} | "
         )
         
     async def generate_status_table(self, websocket):
@@ -181,13 +192,10 @@ class APIThroughputMonitor:
                 "total_chunks": total_chunks
             }
             
-            await websocket.send_text(json.dumps({
-                "status": "stats_update",
-                "data": {
+            await safe_send(websocket, {"status": "stats_update", "data": {
                     "sessions": sessions_data,
                     "dashboard": summary_stats_to_send
-                }
-            }))
+                }}, monitor=self)
 
         return table
     
@@ -206,7 +214,6 @@ class APIThroughputMonitor:
             ftls = []
             try:
                 ftls = [self.sessions[id]['first_token_latency'] for id in self.sessions]
-                logger.debug(ftls)
             except KeyError as e:
                 logger.error(e)
                 ftls = []
@@ -216,7 +223,7 @@ class APIThroughputMonitor:
                 self.sessions[id]['tokens_amount'] = []
 
             status = {
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
                 "elapsed_seconds": elapsed,
                 "total_chars": total_chars,
                 "chars_per_second": round(chars_per_second, 2),
@@ -298,90 +305,147 @@ class APIThroughputMonitor:
     
 
     async def make_request(self, session_id):
-        global count_id
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-        messages = questions[session_id % len(questions)]
-        payload = {
-            "model": self.model,
-            "stream": True,
-            "messages": messages
-        }
-        count_id += 1
-
-        try:
-            async with self.lock:
-                self.sessions[session_id] = {
-                    "status": "Starting",
-                    "start_time": time.time(),
-                    "response_time": None,
-                    "error": None,
-                    "total_chars": 0,
-                    "chunks_received": 0,
-                    "tokens_latency": [],
-                    "tokens_amount": [],
-                    "first_token_latency": -1,
-                }
-
+        async with self.semaphore:
+            global count_id
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}"
+            }
+            messages = questions[session_id % len(questions)]
+            payload = {
+                "model": self.model,
+                "stream": True,
+                "messages": messages
+            }
+            count_id += 1
+            
             start_time = time.time()
             next_token_time = start_time
-            
-            # Make request with SSL verification disabled
-            async with httpx.AsyncClient(verify=False, timeout=180.0, proxy=PROXY) as client:
-                async with client.stream("POST", f"{self.api_url}/chat/completions", headers=headers, json=payload) as response:
-                    # logger.debug(f"RESPONSE STATUS: {response.status_code}")
-                    payload_record = FileHandler(f"{self.output_dir}/in_{runtime_uuid}_{session_id}.json", "w", True)
-                    output_record = FileHandler(f"{self.output_dir}/out_{runtime_uuid}_{session_id}.json", "w", True)
+            final_response = ""
 
-                    payload_record.write(json.dumps(payload))
-                    payload_record.close()
+            try:
+                async with self.lock:
+                    self.sessions[session_id] = {
+                        "status": "Starting",
+                        "start_time": time.time(),
+                        "response_time": None,
+                        "error": None,
+                        "total_chars": 0,                   # only response
+                        "chunks_received": 0,               # only response
+                        "tokens_latency": [],               # only response, unit: s
+                        "tokens_amount": [],                # only response
+                        "first_token_latency": -1,          # unit: s
+                    }
+                
+                # Make request with SSL verification disabled
+                async with httpx.AsyncClient(verify=False, timeout=180.0) as client:
+                    async with client.stream("POST", f"{self.api_url}/chat/completions", headers=headers, json=payload) as response:
+                        status_code = response.status_code
+                        payload_record = FileHandler(f"{self.output_dir}/in_{runtime_uuid}_{session_id}.json", "w", True)
+                        output_record = FileHandler(f"{self.output_dir}/out_{runtime_uuid}_{session_id}.json", "w", True)
 
-                    async for line in response.aiter_lines():
-                        if line:
-                            # logger.info(f"Line: {line}")
-                            data = self.process_stream_info(line)
-                            if data is None:
-                                break
-                            output_record.write(json.dumps(data) + "\n")
+                        payload_record.write(json.dumps(payload))
+                        payload_record.close()
 
-                            content = data["data"]["choices"][0]["delta"].get("content", "")
-                            async with self.lock:
+                        async for line in response.aiter_lines():
+                            if line:
+                                data = self.process_stream_info(line)
+                                if data is None:
+                                    break
+                                output_record.write(json.dumps(data) + "\n")
+
+                                content = data["data"]["choices"][0]["delta"].get("content", "")
                                 latency = round(time.time() - next_token_time, 5)
-                                self.sessions[session_id]["status"] = "Processing"
-                                self.sessions[session_id]["chunks_received"] += 1
-                                self.sessions[session_id]["total_chars"] += len(content)
-                                self.sessions[session_id]["tokens_amount"].append(len(content))
-                                self.sessions[session_id]["tokens_latency"].append(latency)
-                                if self.sessions[session_id]["first_token_latency"] == -1:
-                                    self.sessions[session_id]["first_token_latency"] = latency
-                                next_token_time = time.time()
+                                final_response += content
+                                async with self.lock:
+                                    self.sessions[session_id]["status"] = "Processing"
+                                    self.sessions[session_id]["chunks_received"] += 1
+                                    self.sessions[session_id]["total_chars"] += len(content)
+                                    self.sessions[session_id]["tokens_amount"].append(len(content))
+                                    self.sessions[session_id]["tokens_latency"].append(latency)
+                                    if self.sessions[session_id]["first_token_latency"] == -1:
+                                        self.sessions[session_id]["first_token_latency"] = latency
+                                    next_token_time = time.time()
 
-                    output_record.close()
+                        output_record.close()
 
-            response_time = time.time() - start_time
-            async with self.lock:
-                self.sessions[session_id].update({
-                    "status": "Completed",
-                    "response_time": f"{response_time:.2f}s",
-                    "error": None
-                })
-                self.successful_requests += 1
-        except Exception as e:
-            async with self.lock:
-                logger.error(f"Error in session {session_id}: {str(e)}")
-                self.sessions[session_id].update({
-                    "status": "Failed",
-                    "error": str(e),
-                    "response_time": "N/A"
-                })
-                self.failed_requests += 1
+                response_time = time.time() - start_time
+                async with self.lock:
+                    first_token_latency = self.sessions[session_id]["first_token_latency"]
+                    total_chars = self.sessions[session_id]["total_chars"]
+                    duration_for_speed = response_time - first_token_latency if first_token_latency > 0 else response_time
+                    chars_per_sec = round(total_chars / duration_for_speed, 3) if duration_for_speed > 0 else 0.0
+                    self.sessions[session_id].update({
+                        "status": "Completed",
+                        "response_time": f"{response_time:.2f}s",
+                        "error": None
+                    })
+                    self.successful_requests += 1
+                    
+                    log_record = {
+                        "session_id": session_id,
+                        "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
+                        "prompt": messages[0]["content"],
+                        "response": final_response,
+                        "latency": round(response_time, 5),
+                        "status": "success",
+                        "status_code": status_code,
+                        "total_chars": total_chars,
+                        "chunks_received": self.sessions[session_id]["chunks_received"],
+                        "first_token_latency": first_token_latency,
+                        "chars_per_sec": chars_per_sec
+                    }
+                    self.request_logs.append(log_record)
+                    # ✅ 寫入檔案
+                    with open(Path(self.output_dir, self.request_log_file).resolve(), 'a') as f:
+                        f.write(json.dumps(log_record) + "\n")
+            except asyncio.CancelledError:
+                async with self.lock:
+                    self.sessions[session_id].update({
+                        "status": "Cancelled",
+                        "error": "Cancelled by stop",
+                        "response_time": "N/A"
+                    })
+                    self.failed_requests += 1
 
-        finally:
-            async with self.lock:
-                self.total_requests += 1
-                self.active_sessions -= 1
+                    log_record = {
+                        "session_id": session_id,
+                        "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
+                        "latency": round(time.time() - start_time, 2),
+                        "status": "cancelled",
+                        "error": "Cancelled by stop",
+                    }
+                    self.request_logs.append(log_record)
+                    with open(Path(self.output_dir, self.request_log_file).resolve(), 'a') as f:
+                        f.write(json.dumps(log_record) + "\n")
+                raise  # 很重要，保證取消不被吞掉
+            except Exception as e:
+                async with self.lock:
+                    logger.error(f"Error in session {session_id}: {str(e)}")
+                    self.sessions[session_id].update({
+                        "status": "Failed",
+                        "error": str(e),
+                        "response_time": "N/A"
+                    })
+                    self.failed_requests += 1
+                    
+                    log_record = {
+                        # "request_id": request_id,
+                        "session_id": session_id,
+                        "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
+                        "latency": round(time.time() - start_time, 5),
+                        "status": "fail",
+                        "error": str(e),
+                    }
+                    self.request_logs.append(log_record)
+                    # ✅ 寫入檔案
+                    with open(Path(self.output_dir, self.request_log_file).resolve(), 'a') as f:
+                        f.write(json.dumps(log_record) + "\n")
+
+            finally:
+                async with self.lock:
+                    self.total_requests += 1
+                    self.active_sessions -= 1
 
     def should_update_display(self):
         current_time = time.time()
@@ -393,47 +457,78 @@ class APIThroughputMonitor:
     async def run(self, websocket, duration=10):
         """Async version of run for WebSocket integration"""
         self.duration = duration
-        end_time = time.time() + duration
+        self.websocket = websocket
+        self.end_time = time.time() + duration
         session_id = 0
         self.running = True
         self._stop_requested = False
+        self.tasks = []
+        self.timeout_notified = False
         
         logger.info(f"🧪 Starting run loop for {duration}s with max_concurrent={self.max_concurrent}")
         
         with Live(
-            await self.generate_status_table(websocket),
+            await self.generate_status_table(self.websocket),
             refresh_per_second=4,
             vertical_overflow="visible",
             auto_refresh=True
         ) as live:
             try: 
-                while time.time() < end_time and self.running and not self._stop_requested:
+                while (time.time() < self.end_time and self.running and not self._stop_requested) \
+                       or self.active_sessions > 0:
                     current_time = time.time()
 
+                    if not self.timeout_notified and time.time() >= self.end_time:
+                        if self.websocket and self.websocket.client_state == WebSocketState.CONNECTED:
+                            await safe_send(self.websocket, {
+                                "status": "timeout",
+                                "message": "Execution time limit reached. No new requests will be sent, but running requests will continue."
+                            }, monitor=self)
+                        self.timeout_notified = True
+    
                     if current_time - self.last_log_time >= 1.0:
                         await self.log_status()
 
-                    if self.active_sessions < self.max_concurrent:
+                    if (time.time() < self.end_time and self.running and not self._stop_requested) and self.active_sessions < self.max_concurrent:
                         session_id += 1
                         async with self.lock:
                             self.active_sessions += 1
-                        asyncio.create_task(self.make_request(session_id))
+                        task = asyncio.create_task(self.make_request(session_id))
+                        self.tasks.append(task)
+                    
                     if self.should_update_display():
-                        live.update(await self.generate_status_table(websocket))
-
+                        if self.websocket and self.websocket.client_state == WebSocketState.CONNECTED:
+                            live.update(await self.generate_status_table(self.websocket))
                     await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                logger.info("Monitor task was cancelled")
             finally:
+                if self.websocket and self.websocket.client_state == WebSocketState.CONNECTED:
+                    live.update(await self.generate_status_table(self.websocket))
+                
+                logger.info("🛑 Stopping... Cancelling all running make_request tasks")
+                for task in self.tasks:
+                    task.cancel()
+                await asyncio.gather(*self.tasks, return_exceptions=True)
+                self.tasks.clear()
+                
+                self.pending_messages = []
                 # Send log file to frontend
                 file_info = {
                     "status": "file",
                     "fileName": self.log_file,
                     "fileUrl": f"/downloads/{self.log_file}"
                 }
-                try:
-                    await websocket.send_text(json.dumps(file_info))
-                    logger.info(f"📦 Log file info sent to frontend.")
-                except Exception as e:
-                    logger.error(f"❌ Failed to send log file info to frontend: {e}")
+                await safe_send(self.websocket, file_info, monitor=self)
+                logger.info(f"📦 Log file info sent to frontend.")
+                # Send log file to frontend
+                file_info = {
+                    "status": "file",
+                    "fileName": self.request_log_file,
+                    "fileUrl": f"/downloads/{self.request_log_file}"
+                }
+                await safe_send(self.websocket, file_info, monitor=self)
+                logger.info(f"📦 Request Log file info sent to frontend.")
                 # Generate charts
                 try:
                     log_file_path = Path(self.output_dir, self.log_file).resolve()
@@ -445,12 +540,13 @@ class APIThroughputMonitor:
                         "fileName": self.plot_file,
                         "fileUrl": f"/downloads/{self.plot_file}"
                     }
-                    await websocket.send_text(json.dumps(plot_info))
+                    await safe_send(self.websocket, plot_info, monitor=self)
                     logger.info("📈 Visualization generated successfully.")
                 except Exception as e:
                     logger.error(f"❌ Failed to generate visualization: {e}")
                 # Clean up states
                 self.running = False
+                self.timeout_notified = False
                 self._stop_requested = False
                 logger.info("🛑 run() has ended (timeout or stopped).")
                 # logger.info(f"File Path: {file_info}")
@@ -488,6 +584,20 @@ def load_dataset_as_questions(dataset_name: str, key: Template | Conversation):
         ret = None
     return ret
 
+async def safe_send(websocket: WebSocket, data: dict, monitor):
+    try:
+        await websocket.send_text(json.dumps(data))
+    except WebSocketDisconnect:
+        logger.warning("⚠️ WebSocketDisconnect while sending data")
+        if monitor:
+            logger.info("Save message to pending message.")
+            monitor.pending_messages.append(data)
+            logger.info(f"P: {monitor.pending_messages}")
+    except Exception as e:
+        logger.error(f"❌ Unexpected error during send_text: {e}")
+        if monitor:
+            monitor.pending_messages.append(data)
+
 async def websocket_handler(websocket: WebSocket):
     await websocket.accept()
     global monitor, monitor_task, connected_clients, count_id, questions
@@ -509,72 +619,85 @@ async def websocket_handler(websocket: WebSocket):
             if data.get("command") == "start":
                 runtime_uuid = str(uuid.uuid4()).replace("-", "")
                 if monitor and monitor.running:
-                    await websocket.send_text(json.dumps({"status": "error", "message": "Monitor already running"}))
+                    await safe_send(websocket, {"status": "error", "message": "Monitor already running"}, monitor=monitor)
                     logger.info(f"Monitor already running: {monitor.sessions}")
                 else:
                     params = data.get("params", {})
                     model = params.get('model', os.getenv('MODEL', 'gpt-3.5-turbo'))
                     api_url = normalize_url(params.get('api_url', os.environ.get('API_URL')))
                     api_key = params.get('api_key', os.environ.get('OPENAI_API_KEY'))
+                    time_limit = int(params.get('time_limit', 10))
                     max_concurrent = int(params.get('max_concurrent', 5))
                     columns = int(params.get('columns', 3))
-                    # log_file = params.get('log_file', "api_monitor.jsonl")
-                    # plot_file = params.get('plot_file', "api_metrics.png")
-                    # log_file = f"{runtime_uuid}.jsonl"
-                    # plot_file = f"{runtime_uuid}.png"
+                    # Result File
+                    def get_value_or_default(value: str | None, default: str) -> str:
+                        if value is None or value.strip() == "":
+                            return default
+                        return value
+                                                         
                     taipei_time = datetime.now(ZoneInfo("Asia/Taipei"))
                     current_time = taipei_time.strftime("%Y%m%d_%H%M%S")
-                    log_file = f"api_monitor_{current_time}.jsonl"
-                    plot_file = f"api_metrics_{current_time}.png"
-                    # output_dir = params.get('output_dir') # Dangerous, this might cause security issues like overwriting files or directories discovery
-                    time_limit = int(params.get('time_limit', 10))
+                    output_dir = get_value_or_default(params.get("output_dir"), LOG_FILE_DIR)    # Load it from environment variables
+                    log_file = get_value_or_default(params.get("log_file"), f"api_monitor_{current_time}.jsonl")
+                    plot_file = get_value_or_default(params.get("plot_file"), f"api_metrics_{current_time}.png")
+                    request_log_file = get_value_or_default(params.get("request_log_file"), f"request_api_monitor_{current_time}.jsonl")
+                    # Datasets
                     dataset_name = params.get('dataset', "tatsu-lab/alpaca") # Dangours, use with caution
                     template_str = params.get('template')
                     conversation_str = params.get('conversation')
-
-                    # Load it from environment variables
-                    output_dir = LOG_FILE_DIR
+                    # log level 
+                    console_log_level=params.get("console_log_level")
+                    file_log_level=params.get("file_log_level")
+                    setup_logger(__name__, console_log_level, file_log_level)
+                    logger.info(f"Log level updated via websocket command: CLL: {console_log_level}, FLL: {file_log_level}")
 
                     # Create directories if needed
                     if output_dir and not os.path.exists(output_dir):
                         os.makedirs(output_dir)
-                    
-                    # Set up the monitor
-                    
-                    
-                    # Load dataset
-                    logger.info(f"Loading dataset '{dataset_name}' with template '{template_str}' or conversation '{conversation_str}'")
-                    if template_str is not None and template_str != "":
-                        questions = load_dataset_as_questions(dataset_name, Template(template_str))
-                    elif conversation_str is not None and conversation_str != "":
-                        questions = load_dataset_as_questions(dataset_name, Conversation(conversation_str))
-                    else:
-                        await websocket.send_text(json.dumps({"status": "error", "message": "Either template or conversation must be provided"}))
-                        continue
-                    
+                        
                     if monitor:
                         await monitor.stop_monitor()
-                    monitor = APIThroughputMonitor(
-                        model=model,
-                        api_url=api_url,
-                        api_key=api_key,
-                        max_concurrent=max_concurrent,
-                        columns=columns,
-                        log_file=log_file,
-                        plot_file=plot_file,
-                        output_dir=output_dir
-                    )
-                    
-                    # Start the monitor
-                    logger.info("🚀 Starting API Throughput Monitor...")
-                    await websocket.send_text(json.dumps({"status": "started", "message": "Monitor started"}))
-                    # logger.info("SEND")
-                    # Run the monitor in the background
-                    monitor_task = asyncio.create_task(monitor.run(websocket, duration=time_limit))
 
+                    async def start_monitor():
+                        try:
+                            global monitor, monitor_task, questions
+                            # Load dataset
+                            logger.info(f"Loading dataset '{dataset_name}' with template '{template_str}' or conversation '{conversation_str}'")
+                            if template_str is not None and template_str != "":
+                                questions = load_dataset_as_questions(dataset_name, Template(template_str))
+                            elif conversation_str is not None and conversation_str != "":
+                                questions = load_dataset_as_questions(dataset_name, Conversation(conversation_str))
+                            else:
+                                await safe_send(websocket, {"status": "error", "message": "Either template or conversation must be provided"}, monitor=monitor)
+                                return
+
+                            monitor = APIThroughputMonitor(
+                                model=model,
+                                api_url=api_url,
+                                api_key=api_key,
+                                max_concurrent=max_concurrent,
+                                columns=columns,
+                                log_file=log_file,
+                                plot_file=plot_file,
+                                request_log_file=request_log_file,
+                                output_dir=output_dir
+                            )
+                            
+                            # Start the monitor
+                            logger.info("🚀 Starting API Throughput Monitor...")
+                            try:
+                                await safe_send(websocket, {"status": "started", "message": "Monitor started"}, monitor=monitor)
+                            except Exception:
+                                logger.warning("⚠️ Cannot notify frontend, websocket disconnected before start.")
+                            await monitor.run(websocket, duration=time_limit)
+                        except Exception as e:
+                            logger.exception(f"❌ Monitor run failed during startup or execution: {e}")
+                # Run the monitor in the background
+                monitor_task = asyncio.create_task(start_monitor())
             elif data.get("command") == "stop":
                 if monitor and monitor.running:
                     await monitor.stop_monitor()
+                    logger.info("Stop signal sent to monitor. Waiting for it to finish naturally.")
                     if monitor_task:
                         monitor_task.cancel()
                         try:
@@ -585,10 +708,28 @@ async def websocket_handler(websocket: WebSocket):
                     monitor = None
                     monitor_task = None
                     count_id = 0
-                    await websocket.send_text(json.dumps({"status": "stopping", "message": "Monitor stopping"}))
-                else:
-                    await websocket.send_text(json.dumps({"status": "error", "message": "No monitor running"}))
+                    await safe_send(websocket, {"status": "stopping", "message": "Monitor stopping"}, monitor=monitor)
 
+                else:
+                    await safe_send(websocket, {"status": "error", "message": "No monitor running"}, monitor=monitor)
+            elif data.get("command") == "rebind":
+                if monitor:
+                    monitor.websocket = websocket
+                    await safe_send(websocket, {"status": "rebound", "message": "WebSocket rebound to monitor", "running": monitor.running}, monitor=monitor)
+                    logger.info(f"🔁 WebSocket rebound from client {client_ip}:{client_port}")
+
+                    # 補發未送出的訊息
+                    for msg in monitor.pending_messages:
+                        try:
+                            await safe_send(websocket, msg, monitor=monitor)
+                            logger.info(f"📤 Resent pending message: {msg}")
+                        except Exception as e:
+                            logger.error(f"❌ Failed to resend pending message: {e}")
+
+                    # 清空已發送的訊息
+                    monitor.pending_messages.clear()
+                else:
+                    await safe_send(websocket, {"status": "no_monitor", "message": "No active monitor to rebind"}, monitor=monitor)
 
     except WebSocketDisconnect:
         logger.info(f"Client disconnected: {client_ip}:{client_port}")
@@ -606,7 +747,7 @@ async def monitor_cleaner():
         global monitor, monitor_task, count_id, connected_clients
 
         while True:
-            if monitor_task is not None and monitor_task.done():
+            if monitor_task is not None and monitor_task.done() and monitor.pending_messages == []:
                 monitor = None
                 monitor_task = None
                 count_id = 0
@@ -621,7 +762,7 @@ async def monitor_cleaner():
                             "status": "completed",
                             "message": "Benchmark run finished"
                         }
-                        await websocket.send_text(json.dumps(completion_message))
+                        await safe_send(websocket, completion_message, monitor=monitor)
                         logger.info(f"📡 Sent completion message to {client_ip}:{client_port}")
                     except Exception as e:
                         logger.error(f"Error sending message to {client_ip}:{client_port}: {str(e)}")

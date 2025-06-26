@@ -6,9 +6,5 @@ services:
     container_name: llm-metrics-lab
     ports:
       - "8000:8000"
-    env_file:
-      - .env
-    volumes:
-      - .:/app
     command: python main.py
 

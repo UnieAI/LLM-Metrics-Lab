@@ -18,22 +18,23 @@ from config.settings import (
 )
 
 # --- Set logger ---
-logger = setup_logger(__name__)
+# logger = setup_logger(__name__)
 
 # --- FastAPI app ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🌱 Starting lifespan and background monitor_cleaner")
+    # logger.info("🌱 Starting lifespan and background monitor_cleaner")
     task = asyncio.create_task(monitor_cleaner())
     try:
         yield
     finally:
-        logger.info("🛑 Shutting down, cancelling monitor_cleaner")
+        # logger.info("🛑 Shutting down, cancelling monitor_cleaner")
         task.cancel()
         try:
             await task
         except asyncio.CancelledError:
-            logger.info("✅ monitor_cleaner cancelled successfully")
+            # logger.info("✅ monitor_cleaner cancelled successfully")
+            pass
 
 app = FastAPI(lifespan=lifespan)
 
@@ -41,7 +42,6 @@ try:
     os.makedirs(LOG_FILE_DIR, exist_ok=True)
     app.mount("/downloads", StaticFiles(directory=LOG_FILE_DIR), name="downloads")
 except Exception as e:
-    logger.error(f"Error mounting downloads directory: {e}, ")
     raise RuntimeError(f"Please create the directory '{LOG_FILE_DIR}' manually.")
 
 # get web interface
@@ -54,10 +54,6 @@ async def get_index():
 @app.websocket("/ws")
 async def websocket_route(websocket: WebSocket):
     await websocket_handler(websocket)
-    
-# @app.on_event("startup")
-# async def startup():
-#     asyncio.create_task(monitor_cleaner())
 
 # Activate FastAPI server
 if __name__ == "__main__":
