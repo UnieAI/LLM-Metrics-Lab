@@ -335,6 +335,7 @@ class APIThroughputMonitor:
                         "tokens_latency": [],               # only response, unit: s
                         "tokens_amount": [],                # only response
                         "first_token_latency": -1,          # unit: s
+                        "status_code": 0,
                     }
                 
                 # Make request with SSL verification disabled
@@ -378,7 +379,8 @@ class APIThroughputMonitor:
                     self.sessions[session_id].update({
                         "status": "Completed",
                         "response_time": f"{response_time:.2f}s",
-                        "error": None
+                        "error": None,
+                        "status_code": response.status_code,
                     })
                     self.successful_requests += 1
                     
@@ -389,7 +391,7 @@ class APIThroughputMonitor:
                         "response": final_response,
                         "latency": round(response_time, 5),
                         "status": "success",
-                        "status_code": status_code,
+                        "status_code": response.status_code,
                         "total_chars": total_chars,
                         "chunks_received": self.sessions[session_id]["chunks_received"],
                         "first_token_latency": first_token_latency,
@@ -404,7 +406,8 @@ class APIThroughputMonitor:
                     self.sessions[session_id].update({
                         "status": "Cancelled",
                         "error": "Cancelled by stop",
-                        "response_time": "N/A"
+                        "response_time": "N/A",
+                        "status_code": response.status_code
                     })
                     self.failed_requests += 1
 
@@ -418,14 +421,15 @@ class APIThroughputMonitor:
                     self.request_logs.append(log_record)
                     with open(Path(self.output_dir, self.request_log_file).resolve(), 'a') as f:
                         f.write(json.dumps(log_record) + "\n")
-                raise  # 很重要，保證取消不被吞掉
+                raise
             except Exception as e:
                 async with self.lock:
                     logger.error(f"Error in session {session_id}: {str(e)}")
                     self.sessions[session_id].update({
                         "status": "Failed",
                         "error": str(e),
-                        "response_time": "N/A"
+                        "response_time": "N/A",
+                        "status_code": response.status_code
                     })
                     self.failed_requests += 1
                     
@@ -435,6 +439,7 @@ class APIThroughputMonitor:
                         "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
                         "latency": round(time.time() - start_time, 5),
                         "status": "fail",
+                        "status_code": response.status_code,
                         "error": str(e),
                     }
                     self.request_logs.append(log_record)
