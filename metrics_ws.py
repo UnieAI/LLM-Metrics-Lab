@@ -335,8 +335,32 @@ class APIThroughputMonitor:
                     payload_record = FileHandler(f"{self.output_dir}/in_{runtime_uuid}_{session_id}.json", "w", True)
                     output_record = FileHandler(f"{self.output_dir}/out_{runtime_uuid}_{session_id}.json", "w", True)
 
+<<<<<<< Updated upstream
                     payload_record.write(json.dumps(payload))
                     payload_record.close()
+=======
+            try:
+                async with self.lock:
+                    self.sessions[session_id] = {
+                        "status": "Starting",
+                        "start_time": time.time(),
+                        "response_time": None,
+                        "error": None,
+                        "total_chars": 0,                   # only response
+                        "chunks_received": 0,               # only response
+                        "tokens_latency": [],               # only response, unit: s
+                        "tokens_amount": [],                # only response
+                        "first_token_latency": -1,          # unit: s
+                        "status_code": None,
+                    }
+                
+                # Make request with SSL verification disabled
+                async with httpx.AsyncClient(verify=False, timeout=180.0) as client:
+                    async with client.stream("POST", f"{self.api_url}/chat/completions", headers=headers, json=payload) as response:
+                        status_code = response.status_code
+                        payload_record = FileHandler(f"{self.output_dir}/in_{runtime_uuid}_{session_id}.json", "w", True)
+                        output_record = FileHandler(f"{self.output_dir}/out_{runtime_uuid}_{session_id}.json", "w", True)
+>>>>>>> Stashed changes
 
                     async for line in response.aiter_lines():
                         if line:
@@ -359,6 +383,7 @@ class APIThroughputMonitor:
 
                     output_record.close()
 
+<<<<<<< Updated upstream
             response_time = time.time() - start_time
             async with self.lock:
                 self.sessions[session_id].update({
@@ -381,6 +406,88 @@ class APIThroughputMonitor:
             async with self.lock:
                 self.total_requests += 1
                 self.active_sessions -= 1
+=======
+                response_time = time.time() - start_time
+                async with self.lock:
+                    first_token_latency = self.sessions[session_id]["first_token_latency"]
+                    total_chars = self.sessions[session_id]["total_chars"]
+                    duration_for_speed = response_time - first_token_latency if first_token_latency > 0 else response_time
+                    chars_per_sec = round(total_chars / duration_for_speed, 3) if duration_for_speed > 0 else 0.0
+                    self.sessions[session_id].update({
+                        "status": "Completed",
+                        "response_time": f"{response_time:.2f}s",
+                        "error": None,
+                        "status_code": status_code,
+                    })
+                    self.successful_requests += 1
+                    
+                    log_record = {
+                        "session_id": session_id,
+                        "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
+                        "prompt": messages[0]["content"],
+                        "response": final_response,
+                        "latency": round(response_time, 5),
+                        "status": "success",
+                        "status_code": status_code,
+                        "total_chars": total_chars,
+                        "chunks_received": self.sessions[session_id]["chunks_received"],
+                        "first_token_latency": first_token_latency,
+                        "chars_per_sec": chars_per_sec
+                    }
+                    self.request_logs.append(log_record)
+                    # ✅ 寫入檔案
+                    with open(Path(self.output_dir, self.request_log_file).resolve(), 'a') as f:
+                        f.write(json.dumps(log_record) + "\n")
+            except asyncio.CancelledError:
+                async with self.lock:
+                    self.sessions[session_id].update({
+                        "status": "Cancelled",
+                        "error": "Cancelled by stop",
+                        "response_time": "N/A",
+                        "status_code": response.status_code
+                    })
+                    self.failed_requests += 1
+
+                    log_record = {
+                        "session_id": session_id,
+                        "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
+                        "latency": round(time.time() - start_time, 2),
+                        "status": "cancelled",
+                        "error": "Cancelled by stop",
+                    }
+                    self.request_logs.append(log_record)
+                    with open(Path(self.output_dir, self.request_log_file).resolve(), 'a') as f:
+                        f.write(json.dumps(log_record) + "\n")
+                raise  # 很重要，保證取消不被吞掉
+            except Exception as e:
+                async with self.lock:
+                    logger.error(f"Error in session {session_id}: {str(e)}")
+                    self.sessions[session_id].update({
+                        "status": "Failed",
+                        "error": str(e),
+                        "response_time": "N/A",
+                        "status_code": response.status_code
+                    })
+                    self.failed_requests += 1
+                    
+                    log_record = {
+                        # "request_id": request_id,
+                        "session_id": session_id,
+                        "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat(),
+                        "latency": round(time.time() - start_time, 5),
+                        "status": "fail",
+                        "error": str(e),
+                    }
+                    self.request_logs.append(log_record)
+                    # ✅ 寫入檔案
+                    with open(Path(self.output_dir, self.request_log_file).resolve(), 'a') as f:
+                        f.write(json.dumps(log_record) + "\n")
+
+            finally:
+                async with self.lock:
+                    self.total_requests += 1
+                    self.active_sessions -= 1
+>>>>>>> Stashed changes
 
     def should_update_display(self):
         current_time = time.time()
