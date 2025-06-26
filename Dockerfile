@@ -1,5 +1,5 @@
 # Use an official Python base image
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 # Set working directory
 WORKDIR /app
@@ -16,4 +16,7 @@ RUN pip install -r requirements.txt
 # Copy rest of the application
 COPY . .
 
-CMD ["sleep", "infinity"]
+# Declare the port used by the service
+EXPOSE 8000
+
+CMD ["python", "main.py"]

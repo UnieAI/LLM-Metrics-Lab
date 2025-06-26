@@ -167,4 +167,6 @@ api_monitor.jsonl
 
 .DS_Store
 *.json
+*.jsonl
+*.png
 interface/index.html

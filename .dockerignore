@@ -1,0 +1,13 @@
+__pycache__/
+.dist/
+outputs/
+venv/
+*.log
+*.pyc
+*.pyo
+*.pyd
+*.db
+.env
+.git
+.gitignore
+.vscode

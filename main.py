@@ -1,8 +1,9 @@
 import os
 import asyncio
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from contextlib import asynccontextmanager
 import uvicorn
 import websockets
 
@@ -13,7 +14,6 @@ from config.settings import (
     LOG_FILE_DIR,
     STATIC_DIR,
     HOST,
-    WS_PORT,
     HTTP_PORT,
 )
 
@@ -21,9 +21,24 @@ from config.settings import (
 logger = setup_logger(__name__)
 
 # --- FastAPI app ---
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("🌱 Starting lifespan and background monitor_cleaner")
+    task = asyncio.create_task(monitor_cleaner())
+    try:
+        yield
+    finally:
+        logger.info("🛑 Shutting down, cancelling monitor_cleaner")
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            logger.info("✅ monitor_cleaner cancelled successfully")
+
+app = FastAPI(lifespan=lifespan)
 
 try:
+    os.makedirs(LOG_FILE_DIR, exist_ok=True)
     app.mount("/downloads", StaticFiles(directory=LOG_FILE_DIR), name="downloads")
 except Exception as e:
     logger.error(f"Error mounting downloads directory: {e}, ")
@@ -35,26 +50,17 @@ async def get_index():
     index_file = STATIC_DIR / "preview.html"
     return index_file.read_text(encoding="utf-8")
 
-# Activate WebSocket and FastAPI
-async def main():
-    host = HOST
-    ws_port = WS_PORT
-    http_port = HTTP_PORT
+# WebSocket endpoint
+@app.websocket("/ws")
+async def websocket_route(websocket: WebSocket):
+    await websocket_handler(websocket)
+    
+# @app.on_event("startup")
+# async def startup():
+#     asyncio.create_task(monitor_cleaner())
 
-    # Activate WebSocket server
-    ws_server = await websockets.serve(websocket_handler, host, ws_port)
-    logger.info(f"✅ WebSocket server running at ws://{host}:{ws_port}")
-
-    # Activate FastAPI (HTTP) server
-    config = uvicorn.Config(app, host=host, port=http_port, log_level="info")
-    http_server = uvicorn.Server(config)
-    asyncio.create_task(http_server.serve())
-    logger.info(f"✅ FastAPI server running at http://{host}:{http_port}")
-
-    # Activate cleaner
-    asyncio.create_task(monitor_cleaner())
-
-    await ws_server.wait_closed()
-
+# Activate FastAPI server
 if __name__ == "__main__":
-    asyncio.run(main())
+    config = uvicorn.Config(app, host=HOST, port=HTTP_PORT, log_level="info")
+    server = uvicorn.Server(config)
+    asyncio.run(server.serve())

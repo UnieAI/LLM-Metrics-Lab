@@ -1,12 +1,16 @@
 import os
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 def setup_logger(name=None):
     # Get log levels from environment variables
     console_log_level = os.getenv("CLL", "INFO").upper()
-    file_log_level = os.getenv("FLL", "").upper()  # Default to INFO if not set
+    file_log_level = os.getenv("FLL", "").upper()
     log_file_path = os.getenv("LOG_FILE_PATH", ".")  # Default to current directory if LOG_FILE_PATH is not set
-    log_file_path = os.path.join(log_file_path, "app.log")
+    taipei_time = datetime.now(ZoneInfo("Asia/Taipei"))
+    current_time = taipei_time.strftime("%Y%m%d_%H%M%S")
+    log_file_path = os.path.join(log_file_path, f"app_{current_time}.log")
     
     # Create logger
     logger = logging.getLogger(name)

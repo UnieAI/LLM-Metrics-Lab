@@ -1,14 +1,18 @@
 # Guide: LLM Metrics Lab README
 
 Welcome to the **LLM Metrics Lab**, a suite of tools designed to help you evaluate the performance of large language models (LLMs) through standardized metrics and visual analytics. This guide provides comprehensive instructions on how to use the toolkit, interpret the results, and understand the supported metrics.
+You can choose to run the toolkit in one of two ways:
+- **🐳 Run via Docker**
+- **🧪 Run via Python Script**
 
-# **1. Getting Started**
+# Getting Started
 
-## **1.1 Core Evaluation Toolkit - LLM Metrics Lab**
+## 1. Core Evaluation Toolkit - LLM Metrics Lab
 
 Before using the LLM Metrics Lab, ensure your environment meets the following requirements:
 
 - Python 3.9+
+- Docker installed locally
 - Access credentials to the LLM APIs being evaluated
 
 To install the project locally:
@@ -16,14 +20,9 @@ To install the project locally:
 ```bash
 git clone <https://github.com/UnieAI/LLM-Metrics-Lab> llm-metrics-lab
 cd llm-metrics-lab
-python3 -m venv venv
-source venv/bin/activate
-pip3 install -r requirements.txt
 ```
 
-# **2. Overview of Available Tools**
-
-## **2.1 Environment setup**
+## 2. Environment setup
 
 Before running the metrics, make sure to set up your environment variables. Follow the steps below to get started:
 
@@ -55,11 +54,64 @@ MODEL="gpt-4"
 
 Once the `.env` file is configured, you’re ready to run the project 🎉
 
-## **2.2 Metrics Script (**`metrics.py`**)**
+# Overview of Available Tools
+
+## 1. 🐳 Run via Docker
+Start the service with Docker Compose:
+
+```bash
+# Build and start the service
+docker-compose up --build
+
+# (Optional) Run in the background
+docker-compose up -d
+
+# (Optional) Stop the service
+docker-compose down
+```
+
+✅ You can confirm that the service has started successfully by checking the logs for the following messages:
+```bash
+llm-metrics-lab  | INFO:     Application startup complete.
+llm-metrics-lab  | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+```
+✅ Once running, the service will be available at: http://localhost:8000
+
+## 1.1 Configuration
+In the web interface, the Configuration section allows you to fill in required variables.
+For details on the expected input formats and variable definitions, please refer to **2.1 Metrics Script (`metrics.py`)**.
+![configuration](https://github.com/user-attachments/assets/b43e06e4-3c6e-4cec-916c-151dfcb9813a)
+
+## 1.2 Log Output
+This section displays the runtime status of the system, including events such as Start Monitoring, Stop Monitoring, and Receive output files. It provides real-time feedback on monitoring operations.
+![log_output](https://github.com/user-attachments/assets/6232ad81-5d4f-4066-ab6b-572575062e38)
+
+## 1.3 Output File
+This section provides download links for two result files:
+- `api_monitor_<current_time>.jsonl`: Raw API monitoring logs
+- `api_metrics_<current_time>.png`: Visual summary of the evaluation
+
+For quick reference, the PNG file is also rendered directly within this section.
+![output_file](https://github.com/user-attachments/assets/f8f21e8e-e172-41ba-ac36-eb3f7d3e1925)
+
+## 1.4 Monitoring Dashboard
+This area visualizes the monitoring process as tasks are executed.
+![monitoring_dashboard](https://github.com/user-attachments/assets/078b2a37-2550-4911-8132-5ee2a5e4e368)
+
+
+## 2. 🧪 Run via Python Scripts
+### 2.1 Metrics Script (`metrics.py`)
+Before getting started, make sure you have all required dependencies installed:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip3 install -r requirements.txt
+```
 
 To start measuring the performance of a model, run the `metrics.py` script with configurable variables. Below is an example command:
 
-### **2.2.1 Conversation Usage**
+#### 2.1.1 Conversation Usage
 
 ```bash
 python3 metrics.py \\
@@ -84,7 +136,7 @@ You can view the dataset at: [https://huggingface.co/datasets/unieai/shareGPT](h
 |{"role": "user", "content": "Hello world"}||
 |]||
 
-### 2.2.2 Template Usage
+#### 2.1.2 Template Usage
 
 ```bash
 python3 metrics.py \\
@@ -110,7 +162,7 @@ The system transforms the template into a prompt format and feeds it to the LLM.
 |**instruction**|Which one is larger then a regular cup?|
 |other_input|{something else}|
 
-### **2.2.3 Variable Explanation:**
+#### 2.1.3 Variable Explanation
 
 |**Variable**|**Description**|
 |---|---|
@@ -128,7 +180,7 @@ The system transforms the template into a prompt format and feeds it to the LLM.
 |Useful for consistent input formatting in tasks like QA, summarization, or instruction following.||
 |_⚠️ Cannot be used together with **--conversation**._||
 
-### 2.2.4 Debug Mode Explanation: `CLL` and `FLL`
+#### 2.1.4 Debug Mode Explanation: `CLL` and `FLL`
 
 When running `metrics.py`, you can enable detailed debugging information by setting the following two environment variables. These help developers gain insights into request latency and response behavior. Notice that enabling debug mode may produce a large amount of logging output, so it's recommended to use this during development or troubleshooting.
 
@@ -145,7 +197,7 @@ Set the environment variables before running the command. For example:
 CLL=debug FLL=debug python metrics.py --dataset unieai/shareGPT --conversation conversation --max-concurrent 120 --time-limit 12
 ```
 
-### **2.2.5 Output:**
+#### 2.1.5 Output
 
 After running `metric.py`, the results will be saved as `api_monitor.jsonl` in the execution directory (or in the location specified by `--log-file`). This file contains various performance-related statistics, as illustrated below:
 
@@ -248,11 +300,11 @@ After running `metric.py`, the results will be saved as `api_monitor.jsonl` in t
     - Usually, you only need to observe the latest session’s first token latency to understand the current performance.
     - While `first_tokens_latencies[i]=-1` , at that point in time, no output was generated.
 
-## **2.3 Visualization Script (`visualize.py`)**
+### 2.2 Visualization Script (`visualize.py`)
 
 You can use `visualize.py` to convert the performance data collected by `metrics.py` (stored in `api_monitor.jsonl`) into a visual image file. This helps you better understand and compare performance metrics across different models or sessions.
 
-### **2.3.1 Usage:**
+#### 2.2.1 Usage
 
 ```bash
 python3 visualize.py --log-file <YOUR_LOG_FILE> --output-file <YOUR_OUTPUT_FILE>
@@ -266,22 +318,22 @@ python visualize.py --log-file logs/api_monitor_model-SML_concurrent-128.jsonl -
 
 The above command visualizes the data from `bash logs/api_monitor_model-SML_concurrent-128.jsonl` and saves the output as `bash visualizations/api_monitor_model-SML_concurrent-128.png`.
 
-### **2.3.2 Variable Explanation:**
+#### 2.2.2 Variable Explanation
 
 |Variable|Description|
 |---|---|
 |`--log-file`|The input `.jsonl` file generated by `metrics.py` (e.g., `api_monitor.jsonl`).|
 |`--output-file`|The name of the output image file (e.g., `api_metrics.png`). It should be a `.png` file.|
 
-# **3. Chart Interpretation**
+# Chart Interpretation
 
 After running the `visualize.py` script, a chart containing three line graphs will be generated (default file name: `api_metrics.png`).
 
-## **3.1 Chart Introduction**
+## 1. Chart Introduction
 
 These three graphs display the performance of the large language model (LLM) over a specific period from different perspectives:
 
-### **3.1.1 Real-Time Output Rate Graph (Characters per Second)**
+### 1.1 Real-Time Output Rate Graph (Characters per Second)
 
 This graph reflects the model's **output speed** at each moment. A higher value indicates better output efficiency at that time. Fig. 1 shows that the model's output rate fluctuates within a narrow, stable range, indicating consistent generation speed and efficient handling of incoming requests under load.
 
@@ -289,7 +341,7 @@ This graph reflects the model's **output speed** at each moment. A higher value 
 
 Fig. 1: Performance (Characters per Second)
 
-### **3.1.2 Total Output Accumulation Graph (Total Characters over Time)**
+### 1.2 Total Output Accumulation Graph (Total Characters over Time)
 
 This graph shows the **cumulative output characters** of the model, meaning the total number of characters the model has output over time. The total number of characters increases steadily over time in Fig. 2, with a consistent slope. This indicates that the model maintains a stable and uniform output rate, reflecting consistent throughput per unit time.
 
@@ -297,7 +349,7 @@ This graph shows the **cumulative output characters** of the model, meaning the 
 
 Fig. 2: Performance (Total Characters over Time)
 
-### **3.1.3 Active Sessions Graph (Active Sessions over Time)**
+### 1.3 Active Sessions Graph (Active Sessions over Time)
 
 This graph shows how many sessions are active at each moment in time, helping assess how well the system handles concurrent requests over time. The number of active sessions remains consistently high throughout the test period in Fig. 3, which may suggest underutilized resources, as the system does not appear to be reducing session load despite sustained concurrency.
 
@@ -305,11 +357,11 @@ This graph shows how many sessions are active at each moment in time, helping as
 
 Fig. 3: Performance (Active Sessions over Time)
 
-## **3.2 Feature Explanation**
+## 2. Feature Explanation
 
 The following sections explain the meaning and interpretation of different features of charts.
 
-### **3.2.1 Interpreting Session Drops in High Concurrency Scenarios**
+### 2.1 Interpreting Session Drops in High Concurrency Scenarios
 
 In Fig. 4, under high concurrency (`max-concurrent = 512`), it shows occasional sharp drops in the Active Sessions chart. However, the Total Characters over Time chart reveals a stable and consistent throughput throughout the measurement window. This indicates that the session drops are not due to instability or resource exhaustion, but are instead a result of the model’s high processing efficiency—requests are completed rapidly, leading to fewer concurrently active sessions.
 
@@ -317,7 +369,7 @@ In Fig. 4, under high concurrency (`max-concurrent = 512`), it shows occasional 
 
 Fig. 4: Overall Performance (max-concurrent = 512)
 
-### 3.2.2 Throughput Anomaly
+### 2.2 Throughput Anomaly
 
 Fig. 5 shows a sudden spike in Characters per Second followed by a plateau in Total Characters over Time, suggesting a temporary disruption. This may be attributed to external factors such as shared system usage or network instability, rather than limitations of the model itself.
 
@@ -325,19 +377,19 @@ Fig. 5 shows a sudden spike in Characters per Second followed by a plateau in To
 
 Fig. 5: Overall Performance with Anomaly (max-concurrent = 512)
 
-# 4. Troubleshooting
+# Troubleshooting
 
-## 4.1 Missing `.env` File Causes `TypeError`
+## 1. Missing `.env` File Causes `TypeError`
 
-### **Error Message**:
+### Error Message:
 
 ![image](https://github.com/user-attachments/assets/54fbd4e5-017e-45c0-acaf-84edb80ed5b8)
 
-### **Cause**:
+### Cause:
 
 The `.env` file was not properly loaded, resulting in one or more environment variables being `None`, which causes a `TypeError` when concatenated with strings.
 
-### **Solution:**
+### Solution:
 
 - Ensure a `.env` file exists in the project root.
 - If not, please add it by copy `example.env` and update the variable:
@@ -362,39 +414,39 @@ The `.env` file was not properly loaded, resulting in one or more environment va
         |`MODEL`|The model's name to be evaluated.|
         
 
-## 4.2 Missing`--template` or `--conversation` Variable Causes `ValueError`
+## 2. Missing`--template` or `--conversation` Variable Causes `ValueError`
 
-### **Error Message**:
+### Error Message:
 
 ![image](https://github.com/user-attachments/assets/82f009c7-4314-4033-9595-b493b2d78b0d)
 
-### **Cause**:
+### Cause:
 
 The script was executed without specifying either the `--template` or `--conversation` argument, which are required for the main process to proceed.
 
-### **Solution**:
+### Solution:
 
 Provide one of the required arguments when running the command. Please refer to **2.2.1 Conversation Usage** or **2.2.2 Template Usage** section.
 
-## 4.3 Dataset Format Does Not Match Conversation Usage
+## 3. Dataset Format Does Not Match Conversation Usage
 
 ### Error Message:
 
 ![image](https://github.com/user-attachments/assets/2c202e80-541e-42a3-b41c-9946b056ad15)
 
-### **Cause**:
+### Cause:
 
 The specified dataset does not conform to the expected format required by the `--conversation` template.
 
-### **Solution**:
+### Solution:
 
 Refer to **2.2.1 Conversation Usage / Dataset Preview** section to ensure your dataset structure matches the expected format.
 
-# **Contact and Support**
+# Contact and Support
 
 For issues, questions, or suggestions, please open a GitHub Issue or contact the maintainers at [contact@unieai.com](mailto:contact@unieai.com).
 
-### **Repository**
+### Repository
 
 You can find the full source code, test scripts, and issue tracker at:
 
