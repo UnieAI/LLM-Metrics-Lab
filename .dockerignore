@@ -11,3 +11,4 @@ venv/
 .git
 .gitignore
 .vscode
+.DS_Store
