@@ -358,18 +358,25 @@
                                         <input type="number" class="form-control" id="max-concurrent" value="10" min="1"
                                             max="100">
                                     </div>
-                                    <div class="col-md-6">
+                                    <!-- <div class="col-md-6">
                                         <label for="output-dir" class="form-label">Output Directory <i
                                                 class="bi bi-question-circle help-icon" data-bs-toggle="tooltip"
                                                 title="Directory to save request/response files"></i></label>
                                         <input type="text" class="form-control" id="output-dir" placeholder="output">
+                                    </div> -->
+                                    <div class="col-md-6">
+                                        <label for="req-log-file" class="form-label">Request Log File <i
+                                                class="bi bi-question-circle help-icon" data-bs-toggle="tooltip"
+                                                title="Path to the request log file for monitoring data"></i></label>
+                                        <input type="text" class="form-control" id="req-log-file"
+                                            placeholder="request_api_monitor_<%Y%m%d_%H%M%S>.jsonl">
                                     </div>
                                     <div class="col-md-6">
-                                        <label for="log-file" class="form-label">Log File <i
+                                        <label for="log-file" class="form-label">Timestamp Log File <i
                                                 class="bi bi-question-circle help-icon" data-bs-toggle="tooltip"
-                                                title="Path to the log file for monitoring data"></i></label>
+                                                title="Path to the timestampt log file for monitoring data"></i></label>
                                         <input type="text" class="form-control" id="log-file"
-                                            placeholder="api_monitor_<%Y%m%d_%H%M%S>.jsonl">
+                                            placeholder="timestamp_api_monitor_<%Y%m%d_%H%M%S>.jsonl">
                                     </div>
                                     <div class="col-md-6">
                                         <label for="plot-file" class="form-label">Chart File <i
@@ -1220,7 +1227,8 @@
             // Advanced
             let max_concurrent_input = parseInt(document.getElementById('max-concurrent').value);
             let max_concurrent = Number.isNaN(max_concurrent_input) ? 10 : max_concurrent_input;  // TODO: value check
-            let output_dir = document.getElementById('output-dir').value
+            // let output_dir = document.getElementById('output-dir').value
+            let req_log_file = document.getElementById('req-log-file').value
             let log_file = document.getElementById('log-file').value
             let plot_file = document.getElementById('plot-file').value
             // Dataset
@@ -1248,7 +1256,8 @@
                     api_key: api_key,
                     time_limit: time_limit,
                     max_concurrent: max_concurrent,
-                    output_dir: output_dir,
+                    // output_dir: output_dir,
+                    req_log_file: req_log_file,
                     log_file: log_file,
                     plot_file: plot_file,
                     dataset: datasets,
