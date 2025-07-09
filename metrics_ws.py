@@ -72,7 +72,7 @@ class FileHandler:
         self.close()
 
 class APIThroughputMonitor:
-    def __init__(self, model: str, api_url: str, api_key: str, max_concurrent: int = 5, columns: int = 3, log_file: str = "api_monitor.jsonl", plot_file: str = "api_metrics.png", request_log_file: str = "request_api_monitor.jsonl", output_dir: str = None):
+    def __init__(self, model: str, api_url: str, api_key: str, max_concurrent: int = 5, columns: int = 3, log_file: str = "timestamp_api_monitor.jsonl", plot_file: str = "api_metrics.png", request_log_file: str = "request_api_monitor.jsonl", output_dir: str = None):
         self.model = model
         self.api_url = api_url
         self.api_key = api_key
@@ -645,7 +645,7 @@ async def websocket_handler(websocket: WebSocket):
                     output_dir = get_value_or_default(params.get("output_dir"), LOG_FILE_DIR)    # Load it from environment variables
                     log_file = get_value_or_default(params.get("log_file"), f"api_monitor_{current_time}.jsonl")
                     plot_file = get_value_or_default(params.get("plot_file"), f"api_metrics_{current_time}.png")
-                    request_log_file = get_value_or_default(params.get("request_log_file"), f"request_api_monitor_{current_time}.jsonl")
+                    request_log_file = get_value_or_default(params.get("req_log_file"), f"request_api_monitor_{current_time}.jsonl")
                     # Datasets
                     dataset_name = params.get('dataset', "tatsu-lab/alpaca") # Dangours, use with caution
                     template_str = params.get('template')
