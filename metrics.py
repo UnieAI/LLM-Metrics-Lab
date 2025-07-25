@@ -330,7 +330,11 @@ class APIThroughputMonitor:
                     output_record.write(json.dumps(data) + "\n")
                     if data is None:
                         break
-                    content = data["data"]["choices"][0]["delta"]["content"]
+                    # if content exist in the delta, process it
+                    if "data" not in data or "choices" not in data["data"] or len(data["data"]["choices"]) == 0 or "delta" not in data["data"]["choices"][0] or "content" not in data["data"]["choices"][0]["delta"]:
+                        content = ""
+                    else:
+                        content = data["data"]["choices"][0]["delta"]["content"]
                     with self.lock:
                         latency = round(time.time() - next_token_time, 5)
                         self.sessions[session_id]["status"] = "Processing"
