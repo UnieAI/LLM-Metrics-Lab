@@ -1,0 +1,32 @@
+services:
+  nctu6-unieinfra:
+    image: registry.unieai.com/unieverse/uifw-one:latest
+    volumes:
+      - /data/weights:/weight
+      - /home/nctu6/llm_test:/opt/llm_test
+      - /sys:/sys:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      - /etc/unieai:/etc/unieai
+    runtime: nvidia
+    cap_add:
+      - SYS_ADMIN
+    ports:
+      - 8910:8910
+    environment:
+      - NCCL_DEBUG=INFO
+      - CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+    shm_size: 256gb
+    command: [with-u010,
+              uifw, serve, api_server,
+              #/weight/mistralai/Mixtral-8x7B-Instruct-v0.1,
+              #/weight/meta-llama/Llama-3.1-70B-Instruct,
+              #/weight/meta-llama/Llama-3.1-8B-Instruct,
+              #/weight/Qwen/Qwen2.5-72B-Instruct,
+              /weight/Qwen/Qwen2.5-7B-Instruct,
+              #--tp, '8',
+              #--tp, '4',
+              --tp, '1',
+              --server-port, '8910',
+              --model-name, test,
+              --enable-prefix-caching]
+

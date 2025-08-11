@@ -1,0 +1,1 @@
+docker run --privileged -it -d --shm-size=256g --name nctu6_uifw1 --gpus all  --net=host -v /home/ubuntu:/root -v /data/weights:/root/weights -v /home/nctu6/llm_test:/root/llm_test -v /data/workspace:/root/workspace nctu6/uifw-one

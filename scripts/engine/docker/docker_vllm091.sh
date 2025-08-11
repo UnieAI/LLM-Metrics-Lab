@@ -1,0 +1,1 @@
+docker run --privileged -it -d --shm-size=256g --name nctu6_vllm091 --gpus all  --net=host -v /home/ubuntu:/root -v /data/weights:/root/weights -v /data/workspace:/root/workspace -v /home/nctu6/llm_test:/root/llm_test --entrypoint bash vllm/vllm-openai:v0.9.1

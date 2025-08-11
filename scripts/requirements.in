@@ -1,0 +1,25 @@
+# requirements.in
+
+# vllm is installed separately with --no-deps
+
+# General packages from PyPI
+openai
+transformers
+datasets
+cryptography
+msgspec
+cachetools
+cbor2
+cloudpickle
+psutil
+zmq
+pybase64
+
+# PyTorch packages from PyTorch CPU index
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+torchaudio
+
+# run below command to generate requirements.txt
+# pip-compile requirements.in
