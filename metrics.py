@@ -17,6 +17,7 @@ import os
 from dotenv import load_dotenv
 import uuid
 from utils.url import normalize_url
+from utils.token_counter import count_message_tokens, count_text_tokens
 from datasets import load_dataset
 
 import logging
@@ -100,6 +101,7 @@ class APIThroughputMonitor:
         self.start_time = time.time()
         self.last_log_time = self.start_time
         self.prev_total_chars = 0
+        self.prev_total_tokens = 0
         self.last_update_time = self.start_time
         self.update_interval = 0.25  # Screen update interval in seconds
         self.output_dir = output_dir
@@ -120,7 +122,7 @@ class APIThroughputMonitor:
             f"{session_id:3d} | "
             f"[{status_style}]{info['status']:10}[/{status_style}] | "
             f"Time: {info['response_time'] or '-':8} | "
-            f"Chars: {info['total_chars']:5} | "
+            f"Tokens: {info.get('total_tokens', 0):5} | "
             f"Chunks: {info['chunks_received']:3}"
         )
 
@@ -153,8 +155,10 @@ class APIThroughputMonitor:
 
             elapsed_time = time.time() - self.start_time
             total_chars = sum(s["total_chars"] for s in self.sessions.values())
+            total_tokens = sum(s.get("total_tokens", 0) for s in self.sessions.values())
             total_chunks = sum(s["chunks_received"] for s in self.sessions.values())
             chars_per_sec = total_chars / elapsed_time if elapsed_time > 0 else 0
+            tokens_per_sec = total_tokens / elapsed_time if elapsed_time > 0 else 0
             
             table.add_section()
             stats_summary = (
@@ -164,8 +168,8 @@ class APIThroughputMonitor:
                 f"Total: {self.total_requests} | "
                 f"Success: {self.successful_requests} | "
                 f"Failed: {self.failed_requests}\n"
-                f"Chars/s: {chars_per_sec:.1f} | "
-                f"Total Chars: {total_chars} | "
+                f"Tokens/s: {tokens_per_sec:.1f} | "
+                f"Total Tokens: {total_tokens} | "
                 f"Total Chunks: {total_chunks}"
             )
             table.add_row(stats_summary)
@@ -178,7 +182,9 @@ class APIThroughputMonitor:
         
         with self.lock:
             total_chars = sum(session["total_chars"] for session in self.sessions.values())
+            total_tokens = sum(session.get("total_tokens", 0) for session in self.sessions.values())
             chars_per_second = (total_chars - self.prev_total_chars) / (current_time - self.last_log_time)
+            tokens_per_second = (total_tokens - self.prev_total_tokens) / (current_time - self.last_log_time)
             active_sessions = len([s for s in self.sessions.values() if s["status"] in ["Starting", "Processing"]])
             completed_sessions = len([s for s in self.sessions.values() if s["status"] == "Completed"])
 
@@ -200,6 +206,10 @@ class APIThroughputMonitor:
                 "elapsed_seconds": elapsed,
                 "total_chars": total_chars,
                 "chars_per_second": round(chars_per_second, 2),
+                "total_tokens": total_tokens,
+                "tokens_per_second": round(tokens_per_second, 2),
+                "prompt_tokens": sum(session.get("prompt_tokens", 0) for session in self.sessions.values()),
+                "completion_tokens": sum(session.get("completion_tokens", 0) for session in self.sessions.values()),
                 "active_sessions": active_sessions,
                 "completed_sessions": completed_sessions,
                 "total_sessions": len(self.sessions),
@@ -214,6 +224,7 @@ class APIThroughputMonitor:
                 f.write(json.dumps(status) + '\n')
             
             self.prev_total_chars = total_chars
+            self.prev_total_tokens = total_tokens
             self.last_log_time = current_time
 
     def process_stream_line(self, line):
@@ -291,6 +302,9 @@ class APIThroughputMonitor:
         count_id += 1
 
         try:
+            # Count prompt tokens
+            prompt_tokens = count_message_tokens(messages, self.model)
+            
             with self.lock:
                 self.sessions[session_id] = {
                     "status": "Starting",
@@ -298,6 +312,9 @@ class APIThroughputMonitor:
                     "response_time": None,
                     "error": None,
                     "total_chars": 0,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": 0,
+                    "total_tokens": prompt_tokens,
                     "chunks_received": 0,
                     "tokens_latency": [],
                     "tokens_amount": [],
@@ -335,11 +352,17 @@ class APIThroughputMonitor:
                         content = ""
                     else:
                         content = data["data"]["choices"][0]["delta"]["content"]
+                    
+                    # Count tokens for this chunk
+                    chunk_tokens = count_text_tokens(content, self.model) if content else 0
+                    
                     with self.lock:
                         latency = round(time.time() - next_token_time, 5)
                         self.sessions[session_id]["status"] = "Processing"
                         self.sessions[session_id]["chunks_received"] += 1
                         self.sessions[session_id]["total_chars"] += len(content)
+                        self.sessions[session_id]["completion_tokens"] += chunk_tokens
+                        self.sessions[session_id]["total_tokens"] = self.sessions[session_id]["prompt_tokens"] + self.sessions[session_id]["completion_tokens"]
                         self.sessions[session_id]["tokens_amount"].append(len(content))
                         self.sessions[session_id]["tokens_latency"].append(latency)
                         if self.sessions[session_id]["first_token_latency"] == -1:
@@ -411,7 +434,7 @@ class APIThroughputMonitor:
                     if self.should_update_display():
                         live.update(self.generate_status_table())
                     
-                    time.sleep(0.1)
+                    time.sleep(0.001)
 
 def load_dataset_as_questions(dataset_name: str, key: Template | Conversation = None):
     # I think user might want to implement a custom data loader
