@@ -2,6 +2,9 @@
 """
 Simple MITM Proxy Script for mitmproxy
 Usage: mitmproxy -s proxy_server.py -p 8008
+or:    mitmdump -s proxy_server.py -p 8008
+
+Logs all HTTP traffic passing through the proxy to console and to a file.
 """
 
 import json
@@ -17,6 +20,7 @@ class TrafficLogger:
         self.request_count = 0
         self.response_count = 0
         self.start_time = time.time()
+        self.log_file = "proxy_traffic.jsonl"
     
     def request(self, flow: http.HTTPFlow) -> None:
         """Called when a request is received"""
@@ -25,6 +29,7 @@ class TrafficLogger:
         method = flow.request.method
         url = flow.request.pretty_url
         headers = dict(flow.request.headers)
+        content_length = len(flow.request.content) if flow.request.content else 0
         
         log_data = {
             "type": "request",
@@ -33,10 +38,15 @@ class TrafficLogger:
             "method": method,
             "url": url,
             "headers": dict(headers),
-            "content_length": len(flow.request.content) if flow.request.content else 0
+            "content_length": content_length
         }
         
-        ctx.log.info(json.dumps(log_data))
+        # Log to console
+        ctx.log.info(f"REQUEST #{self.request_count}: {method} {url} ({content_length} bytes)")
+        
+        # Log to file
+        with open(self.log_file, 'a') as f:
+            f.write(json.dumps(log_data) + '\n')
     
     def response(self, flow: http.HTTPFlow) -> None:
         """Called when a response is received"""
@@ -45,6 +55,7 @@ class TrafficLogger:
         status = flow.response.status_code
         method = flow.request.method
         url = flow.request.pretty_url
+        content_length = len(flow.response.content) if flow.response.content else 0
         
         log_data = {
             "type": "response",
@@ -53,10 +64,15 @@ class TrafficLogger:
             "status": status,
             "method": method,
             "url": url,
-            "content_length": len(flow.response.content) if flow.response.content else 0
+            "content_length": content_length
         }
         
-        ctx.log.info(json.dumps(log_data))
+        # Log to console
+        ctx.log.info(f"RESPONSE #{self.response_count}: {status} {method} {url} ({content_length} bytes)")
+        
+        # Log to file
+        with open(self.log_file, 'a') as f:
+            f.write(json.dumps(log_data) + '\n')
 
 
 # Create addon instance
